@@ -333,3 +333,39 @@ def test_saving_one_page_does_not_clear_another(client: TestClient, web_vault: V
     cfg = load_config(web_vault.root)
     assert cfg.delivery.gmail_draft.enabled is False, "unticking on its own page must apply"
     assert cfg.sources.google.enabled, "sources still untouched"
+
+
+def test_collapsed_panels_keep_their_values(client: TestClient, web_vault: VaultStore) -> None:
+    """A switched-off source collapses in the UI. Its fields are hidden, not removed, so the
+    browser still submits them and the settings survive being turned off and on again."""
+    from nbrain.web.app import section_bools
+
+    client.post("/settings", data={
+        "_section": "sources", "_bools": section_bools("sources"),
+        "sources.gitlab.enabled": "1",
+        "sources.gitlab.url": "https://gitlab.example.com",
+        "sources.gitlab.username": "niteen",
+        "sources.gitlab.projects": "grp/one, grp/two",
+    })
+    assert load_config(web_vault.root).sources.gitlab.url == "https://gitlab.example.com"
+
+    # switch GitLab off; the hidden inputs still post their current values
+    client.post("/settings", data={
+        "_section": "sources", "_bools": section_bools("sources"),
+        "sources.gitlab.url": "https://gitlab.example.com",
+        "sources.gitlab.username": "niteen",
+        "sources.gitlab.projects": "grp/one, grp/two",
+    })
+    cfg = load_config(web_vault.root)
+    assert cfg.sources.gitlab.enabled is False
+    assert cfg.sources.gitlab.url == "https://gitlab.example.com", "settings lost when switched off"
+    assert cfg.sources.gitlab.projects == ["grp/one", "grp/two"]
+
+
+def test_sources_page_renders_a_panel_per_source(client: TestClient) -> None:
+    html = client.get("/settings/sources").text
+    for name in ("Google Workspace", "GitLab", "Slack", "Jira"):
+        assert name in html, name
+    assert html.count('class="panel"') >= 4
+    assert 'class="switch"' in html and 'class="panel-off"' in html
+    assert "details class=\"adv\"" in html or 'class="adv"' in html

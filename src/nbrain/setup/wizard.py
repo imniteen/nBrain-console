@@ -129,6 +129,70 @@ def _test_llm(cfg: Config, task: str) -> bool:
         return False
 
 
+# MCP servers worth offering by name in setup, so a user does not have to hand-write JSON for
+# the ones nearly everybody wants. Everything else still goes in via the MCP servers step.
+KNOWN_MCP: dict[str, dict[str, Any]] = {
+    "glean": {
+        "label": "Glean",
+        "blurb": "Company knowledge: search, chat, documents, code, people",
+        "token_env": "GLEAN_TOKEN",
+        "path": "/mcp/default",
+        "roles": ["knowledge"],
+        "domain_hint": "your Glean backend domain, shown at app.glean.com/admin/about-glean",
+        "instructions": "Prefer search over chat, and name the document each answer came from.",
+        "token_prompt": "Glean user-scoped API token (blank to add later with `nbrain secret GLEAN_TOKEN`)",
+    },
+}
+
+
+def _find_mcp(cfg: Config, name: str) -> MCPServerConfig | None:
+    return next((s for s in cfg.mcp_servers if s.name == name), None)
+
+
+def _known_mcp_step(cfg: Config, vault: Path, key: str, enable: bool) -> None:
+    """Add, update or switch off one of the well-known MCP servers."""
+    spec = KNOWN_MCP[key]
+    existing = _find_mcp(cfg, key)
+    if not enable:
+        if existing:
+            existing.enabled = False
+            console.print(f"  [yellow]{spec['label']} switched off.[/yellow] Its settings stay in config.yaml.")
+        return
+
+    current_domain = ""
+    if existing and existing.url:
+        current_domain = existing.url.split("://", 1)[-1].split("/")[0]
+    console.print(f"  {spec['blurb']}. Find {spec['domain_hint']}.")
+    domain = _ask(Q.text(f"{spec['label']} backend domain", default=current_domain, style=STYLE)).strip()
+    domain = domain.replace("https://", "").replace("http://", "").strip("/")
+    if not domain:
+        console.print(f"  [yellow]No domain given; {spec['label']} not configured.[/yellow]")
+        return
+    url = f"https://{domain}{spec['path']}"
+
+    server = existing or MCPServerConfig(name=key)
+    server.enabled = True
+    server.transport = "http"
+    server.url = url
+    server.headers_env = {"Authorization": spec["token_env"]}
+    server.roles = list(spec["roles"])
+    if not server.instructions:
+        server.instructions = spec["instructions"]
+    if existing is None:
+        cfg.mcp_servers.append(server)
+    console.print(f"  {spec['label']} set to [bold]{url}[/bold], role {', '.join(server.roles)}.")
+
+    if get_secret(spec["token_env"]):
+        console.print(f"  {spec['token_env']} is already set.")
+    else:
+        _secret_step(spec["token_env"], vault, prompt=spec["token_prompt"])
+        if not get_secret(spec["token_env"]):
+            console.print(
+                f"  [yellow]No token yet.[/yellow] {spec['label']} stays configured but will be "
+                f"reported as unreachable until you run `nbrain secret {spec['token_env']}`."
+            )
+
+
 def _source_status(cfg: Config, vault: Path) -> dict[str, str]:
     """A short description of what each source already has, shown next to its checkbox so a
     re-run tells you the current state instead of making you remember it."""
@@ -143,12 +207,16 @@ def _source_status(cfg: Config, vault: Path) -> dict[str, str]:
     def tok(env: str) -> str:
         return "token set" if get_secret(env) else "no token"
 
-    return {
+    out = {
         "google": google,
         "gitlab": f"{tok(cfg.sources.gitlab.token_env)} · {cfg.sources.gitlab.url}",
         "slack": tok(cfg.sources.slack.token_env),
         "jira": tok(cfg.sources.jira.token_env) + (f" · {cfg.sources.jira.url}" if cfg.sources.jira.url else ""),
     }
+    for key, spec in KNOWN_MCP.items():
+        srv = _find_mcp(cfg, key)
+        out[key] = tok(spec["token_env"]) + (f" · {srv.url}" if srv and srv.url else " · no URL yet")
+    return out
 
 
 def _sources_step(cfg: Config, vault: Path) -> None:
@@ -157,12 +225,14 @@ def _sources_step(cfg: Config, vault: Path) -> None:
         "gitlab": "GitLab",
         "slack": "Slack",
         "jira": "Jira",
+        **{k: f"{v['label']} ({v['blurb'].lower()})" for k, v in KNOWN_MCP.items()},
     }
     enabled = {
         "google": cfg.sources.google.enabled,
         "gitlab": cfg.sources.gitlab.enabled,
         "slack": cfg.sources.slack.enabled,
         "jira": cfg.sources.jira.enabled,
+        **{k: bool((_find_mcp(cfg, k) or MCPServerConfig(name=k, enabled=False)).enabled and _find_mcp(cfg, k)) for k in KNOWN_MCP},
     }
     status = _source_status(cfg, vault)
     console.print("  Ticked means enabled. Unticking turns a source off; its settings are kept.")
@@ -171,7 +241,7 @@ def _sources_step(cfg: Config, vault: Path) -> None:
             "Sources to connect",
             choices=[
                 Q.Choice(f"{labels[k]}  ({status[k]})", k, checked=enabled[k])
-                for k in ("google", "gitlab", "slack", "jira")
+                for k in ("google", "gitlab", "slack", "jira", *KNOWN_MCP)
             ],
             style=STYLE,
         )
@@ -240,6 +310,9 @@ def _sources_step(cfg: Config, vault: Path) -> None:
         j.url = _ask(Q.text("Jira URL (https://x.atlassian.net)", default=j.url, style=STYLE))
         j.email = _ask(Q.text("Jira account email (blank for Data Center bearer token)", default=j.email or cfg.user.email, style=STYLE))
         _secret_step(j.token_env, vault, prompt="Jira API token")
+
+    for key in KNOWN_MCP:
+        _known_mcp_step(cfg, vault, key, key in picked)
 
 
 def _mcp_step(cfg: Config) -> None:

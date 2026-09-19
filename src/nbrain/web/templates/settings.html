@@ -10,6 +10,18 @@
 <label class="check"><input type="checkbox" name="{{ name }}" value="1" {% if value %}checked{% endif %}> {{ label }}</label>
 {%- endmacro %}
 
+{% macro toggle(name, value) -%}
+<label class="switch"><input type="checkbox" name="{{ name }}" value="1" {% if value %}checked{% endif %}><span class="track"></span></label>
+{%- endmacro %}
+
+{% macro panel_head(name, value, title, sub, tail="") -%}
+<div class="panel-head">
+  {{ toggle(name, value) }}
+  <span class="name"><b>{{ title }}</b><span>{{ sub }}</span></span>
+  <span class="tail">{{ tail|safe }}</span>
+</div>
+{%- endmacro %}
+
 {% macro listfield(name, value, label, hint="") -%}
 <label class="field"><span>{{ label }}</span>
   <input type="text" name="{{ name }}" value="{{ (value or [])|join(', ') }}">
@@ -18,22 +30,32 @@
 
 {% macro llm(task, v) -%}
 {% set p = 'llm.' ~ task ~ '.' %}
-<div class="grid">
+<div class="grid two">
   <label class="field"><span>Provider</span>
-    <select name="{{ p }}provider">{% for pr in providers %}<option value="{{ pr }}" {% if v.provider == pr %}selected{% endif %}>{{ pr }}</option>{% endfor %}</select></label>
-  {{ text(p ~ 'model', v.model, 'Model') }}
-  {{ text(p ~ 'api_key_env', v.api_key_env, 'API key env var', hint='blank = provider default') }}
-  {{ text(p ~ 'base_url', v.base_url, 'Base URL', hint='OpenAI-compatible / Ollama / OpenRouter') }}
-  {{ text(p ~ 'region', v.region, 'AWS region (Bedrock)') }}
-  {{ text(p ~ 'profile', v.profile, 'AWS profile (Bedrock)') }}
-  {{ text(p ~ 'refresh_command', v.refresh_command, 'Credential refresh command') }}
-  <label class="field"><span>Output mode</span>
-    <select name="{{ p }}output_mode">{% for m in output_modes %}<option value="{{ m }}" {% if v.output_mode == m %}selected{% endif %}>{{ m }}</option>{% endfor %}</select></label>
-  {{ text(p ~ 'max_tokens', v.max_tokens, 'Max tokens', type='number') }}
-  {{ text(p ~ 'timeout_seconds', v.timeout_seconds, 'Timeout (s)', type='number', step='any') }}
-  {{ text(p ~ 'temperature', v.temperature, 'Temperature', type='number', step='any', hint='blank = provider default') }}
-  {{ check(p ~ 'anthropic_fallbacks', v.anthropic_fallbacks, 'Anthropic refusal fallbacks') }}
+    <select name="{{ p }}provider">{% for pr in providers %}<option value="{{ pr }}" {% if v.provider == pr %}selected{% endif %}>{{ pr }}</option>{% endfor %}</select>
+    <small>where the model runs</small></label>
+  {{ text(p ~ 'model', v.model, 'Model', hint='exact id, e.g. openai/gpt-5.6-luna') }}
+  {{ text(p ~ 'api_key_env', v.api_key_env, 'API key variable', hint='the name, not the key') }}
+  {{ text(p ~ 'base_url', v.base_url, 'Base URL', hint='Ollama or any OpenAI-compatible endpoint') }}
 </div>
+<details class="adv"><summary>AWS Bedrock</summary>
+  <div class="grid two">
+    {{ text(p ~ 'region', v.region, 'Region', hint='e.g. us-east-1') }}
+    {{ text(p ~ 'profile', v.profile, 'AWS profile', hint='blank = default credential chain') }}
+    <div class="wide">{{ text(p ~ 'refresh_command', v.refresh_command, 'Credential refresh command', hint='run before a sweep when short-lived credentials are expiring, e.g. gimme-aws-creds') }}</div>
+  </div>
+</details>
+<details class="adv"><summary>Generation</summary>
+  <div class="grid two">
+    <label class="field"><span>Structured output</span>
+      <select name="{{ p }}output_mode">{% for m in output_modes %}<option value="{{ m }}" {% if v.output_mode == m %}selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+      <small>use “prompted” for local models without tool calling</small></label>
+    {{ text(p ~ 'max_tokens', v.max_tokens, 'Max tokens', type='number') }}
+    {{ text(p ~ 'timeout_seconds', v.timeout_seconds, 'Timeout (seconds)', type='number', step='any') }}
+    {{ text(p ~ 'temperature', v.temperature, 'Temperature', type='number', step='any', hint='blank = provider default') }}
+    <div class="wide">{{ check(p ~ 'anthropic_fallbacks', v.anthropic_fallbacks, 'Anthropic refusal fallbacks (Opus 5 and Fable 5.1 only)') }}</div>
+  </div>
+</details>
 {%- endmacro %}
 
 {% block content %}
@@ -102,55 +124,93 @@
 <section class="card">
   <h2>Per-task overrides</h2>
   <p class="muted small">Extraction reads your messages and notes, writing produces the brief and the drafts, MCP drives configured servers. A cheaper or local model often suffices for extraction.</p>
-  {% for task in ['extract', 'write', 'mcp'] %}
+  {% for task, blurb in [('extract', 'Finds commitments in your messages and meeting notes'), ('write', 'Writes the brief, the weekly review and reply drafts'), ('mcp', 'Drives configured MCP servers')] %}
   {% set v = c.llm[task] %}
-  <h3>{{ check('llm.' ~ task ~ '.enabled', v is not none, 'Override for ' ~ task) }}</h3>
-  <details {% if v is not none %}open{% endif %}><summary class="muted small">{{ task }} model settings</summary>
-    {{ llm(task, v if v is not none else c.llm.default) }}
-  </details>
+  <div class="panel">
+    {{ panel_head('llm.' ~ task ~ '.enabled', v is not none, task, blurb) }}
+    <div class="panel-off">Using the default model.</div>
+    <div class="panel-body">{{ llm(task, v if v is not none else c.llm.default) }}</div>
+  </div>
   {% endfor %}
 </section>
 
 {% elif section == 'sources' %}
 <section class="card">
   <h2>Native sources</h2>
-  <h3>{{ check('sources.google.enabled', c.sources.google.enabled, 'Google Workspace') }}</h3>
-  <div class="grid">
-    {{ check('sources.google.gmail', c.sources.google.gmail, 'Gmail') }}
-    {{ check('sources.google.calendar', c.sources.google.calendar, 'Calendar') }}
-    {{ check('sources.google.chat', c.sources.google.chat, 'Chat') }}
-    {{ check('sources.google.drive_notes', c.sources.google.drive_notes, 'Drive meeting notes') }}
-    {{ text('sources.google.credentials_file', c.sources.google.credentials_file, 'Credentials file', hint='relative to nbrain/') }}
-    {{ text('sources.google.token_file', c.sources.google.token_file, 'Token file') }}
-    {{ text('sources.google.notes_query', c.sources.google.notes_query, 'Drive notes query') }}
-    {{ text('sources.google.max_threads', c.sources.google.max_threads, 'Max threads', type='number') }}
-    {{ text('sources.google.max_chat_messages', c.sources.google.max_chat_messages, 'Max chat messages', type='number') }}
-    {{ text('sources.google.max_notes_docs', c.sources.google.max_notes_docs, 'Max notes docs', type='number') }}
+  <p class="muted small">Switch a source on to configure it. Everything here is read-only; tokens live under <a href="/settings/secrets">Secrets</a>.</p>
+
+  <div class="panel">
+    {{ panel_head('sources.google.enabled', c.sources.google.enabled, 'Google Workspace', 'Mail, calendar, chat and meeting notes') }}
+    <div class="panel-off">Not connected. Switch on to choose what nbrain reads.</div>
+    <div class="panel-body">
+      <div>
+        <div class="field"><span>What to read</span></div>
+        <div class="grid two">
+          {{ check('sources.google.gmail', c.sources.google.gmail, 'Gmail') }}
+          {{ check('sources.google.calendar', c.sources.google.calendar, 'Calendar') }}
+          {{ check('sources.google.chat', c.sources.google.chat, 'Chat') }}
+          {{ check('sources.google.drive_notes', c.sources.google.drive_notes, 'Drive meeting notes') }}
+        </div>
+      </div>
+      <details class="adv"><summary>Advanced</summary>
+        <div class="grid two">
+          {{ text('sources.google.credentials_file', c.sources.google.credentials_file, 'OAuth client file', hint='relative to nbrain/') }}
+          {{ text('sources.google.token_file', c.sources.google.token_file, 'Token file', hint='written after `nbrain auth google`') }}
+          <div class="wide">{{ text('sources.google.notes_query', c.sources.google.notes_query, 'Drive notes query', hint='which documents count as meeting notes') }}</div>
+          {{ text('sources.google.max_threads', c.sources.google.max_threads, 'Max mail threads per sweep', type='number') }}
+          {{ text('sources.google.max_chat_messages', c.sources.google.max_chat_messages, 'Max chat messages', type='number') }}
+          {{ text('sources.google.max_notes_docs', c.sources.google.max_notes_docs, 'Max notes documents', type='number') }}
+        </div>
+      </details>
+    </div>
   </div>
-  <h3>{{ check('sources.gitlab.enabled', c.sources.gitlab.enabled, 'GitLab') }}</h3>
-  <div class="grid">
-    {{ text('sources.gitlab.url', c.sources.gitlab.url, 'URL') }}
-    {{ text('sources.gitlab.token_env', c.sources.gitlab.token_env, 'Token env var') }}
-    {{ text('sources.gitlab.username', c.sources.gitlab.username, 'Username') }}
-    {{ listfield('sources.gitlab.projects', c.sources.gitlab.projects, 'Projects', 'path/with/namespace; empty = all visible') }}
+
+  <div class="panel">
+    {{ panel_head('sources.gitlab.enabled', c.sources.gitlab.enabled, 'GitLab', 'Reviews waiting on you, your open MRs, failing pipelines') }}
+    <div class="panel-off">Not connected. Needs a token with the <code>read_api</code> scope.</div>
+    <div class="panel-body">
+      <div class="grid two">
+        {{ text('sources.gitlab.url', c.sources.gitlab.url, 'URL') }}
+        {{ text('sources.gitlab.username', c.sources.gitlab.username, 'Your username', hint='used to find work assigned to you') }}
+        {{ text('sources.gitlab.token_env', c.sources.gitlab.token_env, 'Token variable', hint='the name, not the token') }}
+        <div class="wide">{{ listfield('sources.gitlab.projects', c.sources.gitlab.projects, 'Limit to projects', 'path/with/namespace; empty = everything you can see') }}</div>
+      </div>
+    </div>
   </div>
-  <h3>{{ check('sources.slack.enabled', c.sources.slack.enabled, 'Slack') }}</h3>
-  <div class="grid">
-    {{ text('sources.slack.token_env', c.sources.slack.token_env, 'Token env var') }}
-    {{ text('sources.slack.user_id', c.sources.slack.user_id, 'User id') }}
-    {{ listfield('sources.slack.channels', c.sources.slack.channels, 'Channels', 'channel ids; empty = DMs + member channels') }}
-    {{ text('sources.slack.max_messages', c.sources.slack.max_messages, 'Max messages', type='number') }}
+
+  <div class="panel">
+    {{ panel_head('sources.slack.enabled', c.sources.slack.enabled, 'Slack', 'Your own messages and mentions you have not answered') }}
+    <div class="panel-off">Not connected. Needs a user token (<code>xoxp-</code>), not a bot token.</div>
+    <div class="panel-body">
+      <div class="grid two">
+        {{ text('sources.slack.token_env', c.sources.slack.token_env, 'Token variable', hint='the name, not the token') }}
+        {{ text('sources.slack.user_id', c.sources.slack.user_id, 'Your user id', hint='blank = read it from the token') }}
+        <div class="wide">{{ listfield('sources.slack.channels', c.sources.slack.channels, 'Limit to channels', 'channel ids; empty = your DMs and the channels you are in') }}</div>
+      </div>
+      <details class="adv"><summary>Advanced</summary>
+        <div class="grid two">{{ text('sources.slack.max_messages', c.sources.slack.max_messages, 'Max messages per sweep', type='number') }}</div>
+      </details>
+    </div>
   </div>
-  <h3>{{ check('sources.jira.enabled', c.sources.jira.enabled, 'Jira') }}</h3>
-  <div class="grid">
-    {{ text('sources.jira.url', c.sources.jira.url, 'URL') }}
-    {{ text('sources.jira.email', c.sources.jira.email, 'Email') }}
-    {{ text('sources.jira.token_env', c.sources.jira.token_env, 'Token env var') }}
-    {{ text('sources.jira.max_issues', c.sources.jira.max_issues, 'Max issues', type='number') }}
-    {{ text('sources.jira.jql_assigned', c.sources.jira.jql_assigned, 'JQL assigned') }}
-    {{ text('sources.jira.jql_reported', c.sources.jira.jql_reported, 'JQL reported') }}
+
+  <div class="panel">
+    {{ panel_head('sources.jira.enabled', c.sources.jira.enabled, 'Jira', 'Tickets assigned to you that are past due or stale') }}
+    <div class="panel-off">Not connected. Needs a URL and an API token.</div>
+    <div class="panel-body">
+      <div class="grid two">
+        {{ text('sources.jira.url', c.sources.jira.url, 'URL', hint='https://your-org.atlassian.net') }}
+        {{ text('sources.jira.email', c.sources.jira.email, 'Account email', hint='blank for Data Center bearer auth') }}
+        {{ text('sources.jira.token_env', c.sources.jira.token_env, 'Token variable', hint='the name, not the token') }}
+      </div>
+      <details class="adv"><summary>Advanced</summary>
+        <div class="grid two">
+          <div class="wide">{{ text('sources.jira.jql_assigned', c.sources.jira.jql_assigned, 'JQL for work assigned to you') }}</div>
+          <div class="wide">{{ text('sources.jira.jql_reported', c.sources.jira.jql_reported, 'JQL for work you reported') }}</div>
+          {{ text('sources.jira.max_issues', c.sources.jira.max_issues, 'Max issues per sweep', type='number') }}
+        </div>
+      </details>
+    </div>
   </div>
-  <p class="muted small">Tokens live under <a href="/settings/secrets">Secrets</a>, never in config.yaml.</p>
 </section>
 
 <section class="card" id="mcp">
@@ -214,17 +274,39 @@
 {% elif section == 'delivery' %}
 <section class="card">
   <h2>Where the brief goes</h2>
-  <div class="grid">
-    {{ check('delivery.file.enabled', c.delivery.file.enabled, 'Write brief to vault') }}
-    {{ check('delivery.file.html', c.delivery.file.html, 'Also write HTML') }}
-    {{ check('delivery.gmail_draft.enabled', c.delivery.gmail_draft.enabled, 'Gmail draft') }}
-    {{ text('delivery.gmail_draft.subject', c.delivery.gmail_draft.subject, 'Draft subject') }}
-    {{ check('delivery.gmail_send.enabled', c.delivery.gmail_send.enabled, 'Gmail send to self') }}
-    {{ text('delivery.gmail_send.subject', c.delivery.gmail_send.subject, 'Send subject') }}
-    {{ check('delivery.slack_dm.enabled', c.delivery.slack_dm.enabled, 'Slack DM') }}
-    {{ text('delivery.slack_dm.channel', c.delivery.slack_dm.channel, 'Slack DM channel', hint='blank = yourself') }}
+  <p class="muted small">The vault copy is the record; the rest are extra. A Gmail channel is the one write nbrain is allowed, and it only ever addresses you.</p>
+
+  <div class="panel">
+    {{ panel_head('delivery.file.enabled', c.delivery.file.enabled, 'Vault files', 'Markdown in Briefs/, always readable offline') }}
+    <div class="panel-off">Off. Nothing will be written to the vault.</div>
+    <div class="panel-body">
+      <div class="grid two">{{ check('delivery.file.html', c.delivery.file.html, 'Also write the email-styled HTML') }}</div>
+    </div>
   </div>
-  <p class="muted small">A Gmail channel adds the compose or send scope, the one write nbrain is allowed, and it only ever addresses you. Re-run <code>nbrain auth google</code> after enabling it.</p>
+
+  <div class="panel">
+    {{ panel_head('delivery.gmail_draft.enabled', c.delivery.gmail_draft.enabled, 'Gmail draft', 'A draft addressed to you, never sent') }}
+    <div class="panel-off">Off. Enabling adds the Gmail compose scope; re-run <code>nbrain auth google</code> afterwards.</div>
+    <div class="panel-body">
+      <div class="grid two"><div class="wide">{{ text('delivery.gmail_draft.subject', c.delivery.gmail_draft.subject, 'Subject', hint='{date} is replaced') }}</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    {{ panel_head('delivery.gmail_send.enabled', c.delivery.gmail_send.enabled, 'Email to yourself', 'Actually sent, so it lands in your inbox') }}
+    <div class="panel-off">Off. Enabling adds the Gmail send scope; re-run <code>nbrain auth google</code> afterwards.</div>
+    <div class="panel-body">
+      <div class="grid two"><div class="wide">{{ text('delivery.gmail_send.subject', c.delivery.gmail_send.subject, 'Subject', hint='{date} is replaced') }}</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    {{ panel_head('delivery.slack_dm.enabled', c.delivery.slack_dm.enabled, 'Slack DM', 'Posted to your own direct messages') }}
+    <div class="panel-off">Off. Needs the Slack token plus a <code>chat:write</code> scope.</div>
+    <div class="panel-body">
+      <div class="grid two">{{ text('delivery.slack_dm.channel', c.delivery.slack_dm.channel, 'Channel', hint='blank = a DM to yourself') }}</div>
+    </div>
+  </div>
 </section>
 
 {% elif section == 'advanced' %}
