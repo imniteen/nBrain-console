@@ -280,6 +280,57 @@ mcp_servers:
     roles: [notes, knowledge]
 ```
 
+#### Glean
+
+Glean speaks MCP, so it plugs into the layer above with no special support. It is a good fit for
+the `knowledge` role: search, chat, document read, code search and people lookup.
+
+Find your server URL by opening [app.glean.com/admin/about-glean](https://app.glean.com/admin/about-glean),
+taking the backend domain and appending `/mcp/default`. Transport is streamable HTTP; SSE is
+deprecated.
+
+**Use a token, not OAuth.** Glean recommends OAuth for interactive hosts like Cursor, and nbrain
+supports it with `auth: oauth`, but the token is held in memory only: every process re-runs the
+browser flow, which the scheduled daemon cannot do. A user-scoped Client API token works
+unattended.
+
+```bash
+nbrain secret GLEAN_TOKEN
+```
+
+```yaml
+mcp_servers:
+  - name: glean
+    transport: http
+    url: https://<your-backend-domain>/mcp/default
+    headers_env: { Authorization: GLEAN_TOKEN }
+    roles: [knowledge]
+    max_tool_calls: 8
+    instructions: "Prefer search over chat; cite the document each answer came from."
+```
+
+The token is sent as `Authorization: Bearer <token>`; the `Bearer ` prefix is added for you if your
+value does not already carry it. As with every source, the token name lives in `config.yaml` and the
+value does not.
+
+Check what came through:
+
+```bash
+nbrain mcp tools glean
+```
+
+**Glean agents need an explicit allow.** Agents surface as tools, and they are frequently named
+`run_agent_*`, which the write denylist blocks on sight. If you have a read-only agent worth
+calling, such as a profiler, open it deliberately and narrowly:
+
+```yaml
+    allow_write: true
+    tool_allow: ["^search$", "^read_document$", "^run_agent_profiler$"]
+```
+
+`allow_write` lifts the name-based gate, so pair it with a `tool_allow` list rather than leaving it
+open. `nbrain mcp tools glean` shows exactly which tools each combination permits.
+
 `nbrain mcp tools linear` shows every tool and whether the read-only gate allows it;
 `nbrain mcp call linear list_issues '{"limit": 5}'` calls one directly.
 

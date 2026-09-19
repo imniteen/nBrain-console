@@ -69,6 +69,8 @@ def _expand(value: str) -> str:
 
 
 def build_transport(server: MCPServerConfig) -> Any:
+    if server.auth == "oauth" and server.transport == "stdio":
+        raise ValueError(f"MCP server {server.name}: oauth needs an http or sse transport, not stdio")
     if server.transport == "stdio":
         if not server.command:
             raise ValueError(f"MCP server {server.name}: stdio transport needs `command`")
@@ -83,9 +85,13 @@ def build_transport(server: MCPServerConfig) -> Any:
             headers[header] = val if header.lower() != "authorization" or val.lower().startswith(("bearer ", "basic ")) else f"Bearer {val}"
         else:
             log.warning("MCP server %s: header %s references unset env %s", server.name, header, env_name)
+    # oauth runs the server's OAuth 2.1 flow (dynamic client registration) in a browser.
+    # The token is held in memory only, so every process start re-authenticates: fine when you
+    # run a command yourself, useless for the scheduled daemon. Prefer a token in headers_env there.
+    auth = "oauth" if server.auth == "oauth" else None
     if server.transport == "sse":
-        return SSETransport(server.url, headers=headers or None)
-    return StreamableHttpTransport(server.url, headers=headers or None)
+        return SSETransport(server.url, headers=headers or None, auth=auth)
+    return StreamableHttpTransport(server.url, headers=headers or None, auth=auth)
 
 
 class MCPRegistry:

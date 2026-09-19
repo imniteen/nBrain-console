@@ -171,6 +171,10 @@ class MCPServerConfig(BaseModel):
     url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
     headers_env: dict[str, str] = Field(default_factory=dict)  # header name -> env var holding value
+    # "oauth" runs the server's OAuth 2.1 flow in a browser. The token is NOT persisted, so each
+    # process re-authenticates — usable interactively, not from the daemon. For unattended runs use
+    # a token via headers_env instead. "none" = no auth, or authenticated by the headers above.
+    auth: Literal["none", "oauth"] = "none"
     roles: list[Role] = Field(default_factory=lambda: ["other"])
     tool_allow: list[str] = Field(default_factory=list)  # regexes; empty = all
     tool_deny: list[str] = Field(default_factory=list)  # regexes, in addition to the write denylist
