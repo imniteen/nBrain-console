@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block actions %}<a class="small" href="/briefs">← Briefs</a>{% endblock %}
+{% block content %}
+{% if weeks %}
+<div class="table-wrap">
+<table class="list">
+  <thead><tr><th>Week</th></tr></thead>
+  <tbody>{% for w in weeks %}<tr><td><a href="/reviews/{{ w }}"><b>{{ w }}</b></a></td></tr>{% endfor %}</tbody>
+</table>
+</div>
+{% else %}
+<div class="card"><div class="empty">
+  <svg class="ico"><use href="#i-reviews"></use></svg>
+  <b>No weekly reviews yet</b>
+  <p>The review runs on {{ cfg.sweep.weekly.day }} at {{ cfg.sweep.weekly.time }}. You can also trigger one from the dashboard.</p>
+</div></div>
+{% endif %}
+{% endblock %}

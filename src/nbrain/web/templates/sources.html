@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block subtitle %}<span class="sub">Connections are read-only. A check connects with your stored credentials and writes nothing.</span>{% endblock %}
+{% block actions %}
+<form method="post" action="/sources/check" class="inline"><button type="submit">Run check</button></form>
+{% endblock %}
+
+{% block content %}
+{% if results is not none %}
+<section class="card flush">
+  <div class="card-head"><h2>Check results</h2><span class="small muted">{{ results|selectattr('ok')|list|length }} of {{ results|length }} healthy</span></div>
+  <div class="table-wrap">
+  <table class="list">
+    <thead><tr><th>Source</th><th>Status</th><th>Detail</th><th>Token can write</th></tr></thead>
+    <tbody>
+    {% for r in results %}
+    <tr><td><b>{{ r.name }}</b></td>
+        <td><span class="pill {{ 'ok' if r.ok else 'danger' }}"><span class="dot"></span>{{ 'healthy' if r.ok else 'failed' }}</span></td>
+        <td class="small muted">{{ r.detail }}</td>
+        <td>{% if r.write_capable %}<span class="pill warn">yes</span>{% else %}<span class="pill ok">no</span>{% endif %}</td></tr>
+    {% endfor %}
+    {% if not results %}<tr><td colspan="4"><div class="empty"><b>Nothing enabled to check</b><p>Enable a source in Settings first.</p></div></td></tr>{% endif %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+
+<section class="cols">
+  <div class="card flush">
+    <div class="card-head"><h2>Native sources</h2></div>
+    <div class="table-wrap">
+    <table class="list">
+      <tbody>
+      {% for s in native %}
+      <tr><td><b>{{ s.name }}</b></td>
+          <td class="nowrap"><span class="pill {{ 'ok' if s.enabled else 'muted-pill' }}"><span class="dot"></span>{{ 'enabled' if s.enabled else 'off' }}</span></td>
+          <td class="small muted">{{ s.detail }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="stack">
+    <div class="card">
+      <h2>Models</h2>
+      <ul class="plain small">{% for l in llms %}<li><b>{{ l.task }}</b> <code>{{ l.desc }}</code></li>{% endfor %}</ul>
+    </div>
+    <div class="card">
+      <h2>MCP servers</h2>
+      {% if mcp %}
+      <div class="table-wrap">
+      <table class="list">
+        <thead><tr><th>Name</th><th>Transport</th><th>Roles</th><th>Writes</th><th></th></tr></thead>
+        <tbody>
+        {% for s in mcp %}
+        <tr><td><b>{{ s.name }}</b></td>
+            <td class="small muted">{{ s.transport }} {{ s.command or s.url or '' }}</td>
+            <td class="small">{{ s.roles|join(', ') }}</td>
+            <td>{% if s.allow_write %}<span class="pill warn">allowed</span>{% else %}<span class="pill ok">read-only</span>{% endif %}</td>
+            <td><span class="pill {{ 'ok' if s.enabled else 'muted-pill' }}">{{ 'enabled' if s.enabled else 'off' }}</span></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <div class="empty">
+        <svg class="ico"><use href="#i-sources"></use></svg>
+        <b>No MCP servers</b>
+        <p>Any MCP server can be added as a source. Configure them under <a href="/settings#mcp">Settings</a>; write-shaped tools stay blocked unless you allow them.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}

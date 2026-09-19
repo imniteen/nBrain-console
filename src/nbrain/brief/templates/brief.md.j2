@@ -1,0 +1,104 @@
+# Daily brief — {{ today.strftime('%A %d %B %Y') }}
+
+| Due today | Waiting on you | Oldest | Delivered |
+|---|---|---|---|
+| {{ m.urgent|length }} | {{ m.waiting_on_me|length }} | {{ m.oldest_days if m.oldest_days is not none else '–' }}d | {{ m.delivery_score }} |
+
+> [!important] Today's one thing
+> {{ b.one_thing }}
+
+{% if b.due_overflow and not b.due_today %}
+## Due today
+{{ b.due_overflow }} things are due or overdue today. That is a planning problem, not a to-do list — pick three in [[radar]].
+{% elif b.due_today %}
+## Due today
+{% for i in b.due_today %}
+- **{{ i.title }}** · {{ i|badge(today) }}{% if i.promised_to %} · {{ i.promised_to }}{% endif %}{% if i.url %} · [link]({{ i.url }}){% else %} · no link{% endif %} · [[{{ i.id }}]]
+{% endfor %}
+{% endif %}
+{% if b.bottleneck %}
+## You are the bottleneck
+{% for i in b.bottleneck %}
+- {{ i.title }} · {{ i|age(today) }} · {{ i.verified_label() }}{{ (" · [link](" ~ i.url ~ ")") if i.url else "" }}
+{% endfor %}
+{% endif %}
+
+_{{ b.assessment }}_
+
+## Do this, in order
+{% for a in b.actions %}
+{{ loop.index }}. {{ a.text }}{{ (" — _" ~ a.effort_hint ~ "_") if a.effort_hint else "" }}{{ (" [[" ~ a.item_id ~ "|details]]") if a.item_id else "" }}
+{% endfor %}
+{% if 'priority_balance' in b.extras and m.priority_split %}
+
+## Priority balance
+{% for name, pct in m.priority_split.items() %}
+- {{ name }}: {{ (pct * 100)|round|int }}%
+{% endfor %}
+{% if m.imbalance %}
+One priority is starving the other ({{ m.imbalance_runs }} runs running).
+{% endif %}
+{% endif %}
+{% if b.changed_lines %}
+
+## Changed since yesterday
+{% for l in b.changed_lines %}
+- {{ l }}
+{% endfor %}
+{% endif %}
+{% if b.retractions %}
+
+## Retractions
+{% for r in b.retractions %}
+- {{ r }}
+{% endfor %}
+{% endif %}
+
+## Waiting on you
+{% if b.waiting %}
+{% for i in b.waiting %}
+- {{ i.title }} · {{ i|age(today) }} · {{ i.verified_label() }}{% if i.url %} · [link]({{ i.url }}){% else %} · no link{% endif %} · [[{{ i.id }}]]
+{% endfor %}
+{{ ("+" ~ b.waiting_hidden ~ " more in [[radar]].") if b.waiting_hidden else "" }}
+{% else %}
+Nobody is waiting on you.
+{% endif %}
+
+## Slipping
+{% if b.slipping %}
+{% for i in b.slipping %}
+- {{ i.title }}{{ (" — " ~ i.cause) if i.cause else "" }} · {{ i|age(today) }} · {{ i.verified_label() }}{{ (" · [link](" ~ i.url ~ ")") if i.url else "" }}
+{% endfor %}
+{{ ("+" ~ b.slipping_hidden ~ " more in [[radar]].") if b.slipping_hidden else "" }}
+{% else %}
+Nothing is slipping.
+{% endif %}
+{% if b.commitments %}
+
+## Commitments still open
+{% for i in b.commitments %}
+- {{ i.title }}{% if i.promised_to %} → {{ i.promised_to }}{% endif %}{% if i.due %} · due {{ i.due }}{% endif %} · {{ i|age(today) }}
+{% endfor %}
+{{ ("+" ~ b.commitments_hidden ~ " more in [[radar]].") if b.commitments_hidden else "" }}
+{% endif %}
+
+## Today's meetings
+{% if b.meetings_action %}
+{% for mt in b.meetings_action %}
+- {{ mt.time }} **{{ mt.title }}** — {{ mt.why }}{{ (" · [open](" ~ mt.url ~ ")") if mt.url else "" }}
+{% endfor %}
+{% for n in b.meeting_notes %}
+- _{{ n }}_
+{% endfor %}
+{% endif %}
+{{ (b.meetings_other ~ " other meeting(s) need nothing from you.") if b.meetings_other else ("No meetings needing action today." if not b.meetings_action else "") }}
+{% if b.tomorrow %}
+
+## Tomorrow
+{% for l in b.tomorrow %}
+- {{ l }}
+{% endfor %}
+{% endif %}
+
+---
+{{ b.not_checked }}

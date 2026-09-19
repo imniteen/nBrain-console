@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block subtitle %}<span class="sub">{{ items|length }} item{{ '' if items|length == 1 else 's' }} shown{% if q %} matching “{{ q }}”{% endif %}</span>{% endblock %}
+
+{% block content %}
+<form method="get" action="/ledger" class="filters">
+  <label>Status
+    <select name="status">
+      <option value="all" {% if status == 'all' %}selected{% endif %}>All</option>
+      {% for s in item_statuses %}<option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }} ({{ counts[s] }})</option>{% endfor %}
+    </select></label>
+  <label>Type
+    <select name="type">
+      <option value="">Any</option>
+      {% for t in item_types %}<option value="{{ t }}" {% if type == t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+    </select></label>
+  <label>Search <input type="search" name="q" value="{{ q }}" placeholder="title, person, project, source"></label>
+  <button type="submit">Filter</button>
+  {% if q or type or status != 'open' %}<a class="small muted" href="/ledger">Reset</a>{% endif %}
+</form>
+
+{% if items %}
+<div class="ledger-wrap">
+<table class="ledger">
+  <thead><tr>
+    <th>Item</th><th>Type</th><th>Person</th><th>Project</th><th>Due</th><th>Age</th><th>Verified</th><th>Source</th><th></th>
+  </tr></thead>
+  <tbody>
+  {% for i in items %}
+  <tr id="item-{{ i.id }}" class="{% if i.id == focus %}focus{% endif %} {% if i.is_overdue(today) %}overdue{% endif %}" data-status="{{ i.status.value }}">
+    <td class="title">
+      <a href="/note/{{ i.id|urlencode }}" data-item="{{ i.id }}">{{ i.title }}</a>
+      {% if i.status.value != 'open' %}<span class="pill {{ 'ok' if i.status.value == 'resolved' else 'muted-pill' }}">{{ i.status.value }}</span>{% endif %}
+      {% if i.url %}<a href="{{ i.url }}" target="_blank" rel="noopener" class="small" title="Open at the source">↗</a>{% endif %}
+      {% if i.evidence %}<div class="muted small">{{ i.evidence|truncate(150) }}</div>{% endif %}
+      {% if i.dismissed_reason %}<div class="muted small">Dismissed: {{ i.dismissed_reason }}</div>{% endif %}
+    </td>
+    <td><span class="pill type-{{ i.type.value }}">{{ i.type.value }}</span></td>
+    <td class="nowrap">{% if i.person %}<a href="/note/{{ i.person|urlencode }}">{{ i.person }}</a>{% else %}<span class="muted">–</span>{% endif %}</td>
+    <td class="nowrap">{% if i.project_name %}<a href="/note/{{ i.project_name|urlencode }}">{{ i.project_name }}</a>{% else %}<span class="muted">–</span>{% endif %}</td>
+    <td class="nowrap tnum">{% if i.due %}<span class="{% if i.is_overdue(today) %}danger-text{% elif i.is_due_today(today) %}warn-text{% endif %}">{{ i.due }}</span>{% else %}<span class="muted">–</span>{% endif %}</td>
+    <td class="nowrap tnum">{{ i.age_days(today)|age }}</td>
+    <td class="small nowrap">{{ i.verified_label() }}</td>
+    <td class="small nowrap muted">{{ i.source }}</td>
+    <td class="actions">
+      {% if i.status.value in ('open', 'watch') %}
+      <form method="post" action="/items/{{ i.id|urlencode }}/resolve" class="inline"><button type="submit" class="small secondary">Resolve</button></form>
+      <form method="post" action="/items/{{ i.id|urlencode }}/dismiss" class="inline dismiss">
+        <input type="text" name="reason" placeholder="reason" required minlength="2">
+        <button type="submit" class="small ghost">Dismiss</button>
+      </form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="card">
+  <div class="empty">
+    <svg class="ico"><use href="#i-ledger"></use></svg>
+    <b>Nothing matches</b>
+    <p>{% if q or type %}Try clearing the filters.{% else %}Items appear here once a sweep finds commitments you made or work waiting on you.{% endif %}</p>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if focus %}<script>var el = document.getElementById('item-{{ focus|e }}'); if (el) el.scrollIntoView({block: 'center'});</script>{% endif %}
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block actions %}
+{% if back %}<a class="small" href="{{ back[0] }}">← {{ back[1] }}</a>{% endif %}
+{% if raw_link %}<a class="small" href="{{ raw_link }}">{{ raw_label or 'raw' }} ↗</a>{% endif %}
+{% endblock %}
+{% block content %}
+<article class="card doc">{{ body_html|safe }}</article>
+{% endblock %}

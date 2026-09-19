@@ -1,0 +1,606 @@
+{% extends "base.html" %}
+
+{% block heading %}{{ title | default("Graph") }}{% endblock %}
+{% block subtitle %}<span class="sub" id="status">Loading…</span>{% endblock %}
+
+{% block actions %}
+<input id="search" type="search" placeholder="Search nodes…" autocomplete="off" aria-label="Search nodes">
+<span class="row" id="focusRow" style="display:none">
+  <span class="small muted">Local graph of <b id="focusName"></b> · depth <b id="depthLabel">1</b></span>
+  <button id="exitFocus" class="secondary small">Show all</button>
+</span>
+{% endblock %}
+
+{% block content %}
+<style>
+  /* ---------- page shell: fill the main column, no page scroll ---------- */
+  .graphpage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 336px;
+    height: calc(100vh - 57px);
+    height: calc(100dvh - 57px);
+    min-height: 0;
+    overflow: hidden;
+  }
+  /* preferred: let the topbar keep its real height instead of guessing at it.
+     .main needs min-height:0 or its grid track lets it grow past the viewport. */
+  .app:has(.graphpage) { height: 100vh; height: 100dvh; }
+  .app:has(.graphpage) .main { height: 100%; min-height: 0; }
+  .app:has(.graphpage) .content { flex: 1 1 auto; min-height: 0; padding: 0; max-width: none; }
+  .app:has(.graphpage) .graphpage { height: 100%; }
+  .topbar #search { min-width: 220px; }
+
+  /* ---------- graph data colours (read by JS via getComputedStyle) ---------- */
+  .graphpage {
+    --c-open: #dc3b3b;
+    --c-resolved: #12a15c;
+    --c-watch: #8a94a6;
+    --c-dismissed: #cfd4dc;
+    --c-person: #2563eb;
+    --c-project: #7c3aed;
+    --c-meeting: #d97706;
+    --c-source: #0d9488;
+    --c-phantom: #98a2b3;
+    --c-note: #a6b0c0;
+    --c-brief: #a6b0c0;
+    --link: #c6ccd7;
+    --dim: 0.12;
+    --sev3: var(--danger);
+    --sev2: var(--warn);
+    --sev1: var(--accent);
+  }
+  @media (prefers-color-scheme: dark) {
+    .graphpage {
+      --c-open: #f4736f;
+      --c-resolved: #5ad19a;
+      --c-watch: #8892a4;
+      --c-dismissed: #454c5c;
+      --c-person: #60a5fa;
+      --c-project: #a78bfa;
+      --c-meeting: #f0b429;
+      --c-source: #2dd4bf;
+      --c-phantom: #6e7889;
+      --c-note: #667084;
+      --c-brief: #667084;
+      --link: #2c3342;
+      --dim: 0.14;
+    }
+  }
+
+  /* ---------- canvas ---------- */
+  #canvas { position: relative; overflow: hidden; background: var(--bg); min-width: 0; }
+  #graph { position: absolute; inset: 0; }
+  #graph canvas { display: block; }
+
+  #legend {
+    position: absolute;
+    left: 14px;
+    top: 12px;
+    z-index: 2;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    max-width: calc(100% - 28px);
+    padding: 5px 9px;
+    font-size: 11.5px;
+    color: var(--text-3);
+    background: color-mix(in srgb, var(--surface) 82%, transparent);
+    border: 1px solid var(--border);
+    border-radius: var(--r-full);
+    box-shadow: var(--shadow-sm);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  #legend span.it { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+
+  #hover {
+    position: absolute;
+    z-index: 5;
+    display: none;
+    pointer-events: none;
+    max-width: 300px;
+    padding: 9px 11px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text-2);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    box-shadow: var(--shadow-lg);
+  }
+  #hover .name { font-weight: 600; font-size: 13px; color: var(--text); }
+  #hover .meta { color: var(--text-3); font-size: 11.5px; margin: 1px 0 4px; }
+
+  /* ---------- right panel ---------- */
+  .gpanel {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 16px 16px 40px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    min-width: 0;
+  }
+  .gpanel h2 { margin: 22px 0 9px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+  .gpanel > h2:first-child { margin-top: 0; }
+  .gpanel .hint { font-size: 11px; font-weight: 500; color: var(--text-3); letter-spacing: 0; }
+  .gpanel .row { gap: 6px; }
+
+  /* filter chips */
+  label.chk {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-full);
+    background: var(--surface-2);
+    color: var(--text-3);
+    font-size: 12px;
+    font-weight: 550;
+    line-height: 18px;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    transition: background .12s ease, border-color .12s ease, color .12s ease;
+  }
+  label.chk input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; }
+  label.chk:hover { border-color: var(--border-strong); color: var(--text-2); }
+  label.chk:has(input:checked) { background: var(--surface); border-color: var(--border-strong); color: var(--text); box-shadow: var(--shadow-sm); }
+  label.chk:has(input:not(:checked)) .sw { opacity: .3; }
+  label.chk:has(input:focus-visible) { border-color: var(--accent); box-shadow: var(--ring); }
+  .sw { display: inline-block; width: 9px; height: 9px; border-radius: var(--r-full); flex: none; }
+  .sw.phantom { background: transparent; border: 1.5px dashed var(--c-phantom); }
+
+  /* date range */
+  .range { position: relative; height: 28px; margin: 6px 0 2px; }
+  .range input[type=range] {
+    position: absolute; left: 0; right: 0; top: 0; width: 100%; height: 28px; margin: 0; padding: 0;
+    pointer-events: none; -webkit-appearance: none; appearance: none;
+    background: transparent; border: 0; box-shadow: none;
+  }
+  .range input[type=range]:hover { border: 0; }
+  .range input[type=range]::-webkit-slider-runnable-track { height: 28px; background: transparent; }
+  .range input[type=range]::-webkit-slider-thumb {
+    pointer-events: auto; -webkit-appearance: none; width: 14px; height: 14px; margin-top: 7px;
+    border-radius: var(--r-full); background: var(--accent); border: 2px solid var(--surface);
+    box-shadow: var(--shadow-sm); cursor: ew-resize;
+  }
+  .range input[type=range]::-moz-range-thumb {
+    pointer-events: auto; width: 13px; height: 13px;
+    border-radius: var(--r-full); background: var(--accent); border: 2px solid var(--surface);
+    box-shadow: var(--shadow-sm); cursor: ew-resize;
+  }
+  .range input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: var(--ring); }
+  .range input[type=range]:focus-visible::-moz-range-thumb { box-shadow: var(--ring); }
+  .range .track { position: absolute; left: 6px; right: 6px; top: 12.5px; height: 4px; background: var(--surface-3); border-radius: var(--r-full); }
+  .range .fill { position: absolute; top: 12.5px; height: 4px; background: var(--accent); border-radius: var(--r-full); }
+  .dates { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+  /* selected node card */
+  #selected {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    padding: 11px 12px;
+  }
+  #selected .name { font-weight: 600; color: var(--text); line-height: 1.4; }
+  #selected .meta { color: var(--text-3); font-size: 11.5px; margin: 2px 0 7px; }
+  #selected .preview { font-size: 12.5px; color: var(--text-2); margin-bottom: 9px; }
+  #selected .row { gap: 8px; }
+  #selected select { padding: 4px 26px 4px 8px; font-size: 12px; }
+  #selected button { padding: 4px 11px; font-size: 12px; }
+  #selected a { font-size: 12.5px; font-weight: 550; }
+
+  /* patterns */
+  #patterns { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+  #patterns li {
+    display: flex;
+    gap: 9px;
+    align-items: flex-start;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--text-2);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    transition: background .12s ease, border-color .12s ease;
+  }
+  #patterns li:hover { background: var(--surface-2); border-color: var(--border-strong); }
+  #patterns li.active { background: var(--accent-soft); border-color: var(--accent-border); color: var(--text); }
+  #patterns li b { color: var(--text); font-weight: 600; }
+  .sev { flex: none; width: 7px; height: 7px; border-radius: var(--r-full); margin-top: 6px; }
+  .sev3 { background: var(--sev3); }
+  .sev2 { background: var(--sev2); }
+  .sev1 { background: var(--sev1); }
+
+  /* compact empty states inside the panel */
+  .gpanel .empty { padding: 14px 10px; gap: 3px; font-size: 12.5px; font-style: normal; }
+  #patterns li.empty { display: grid; cursor: default; background: var(--surface-2); border-style: dashed; }
+  #patterns li.empty:hover { border-color: var(--border); background: var(--surface-2); }
+
+  @media (max-width: 900px) {
+    .graphpage { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 46%); }
+    .gpanel { border-left: 0; border-top: 1px solid var(--border); }
+  }
+</style>
+
+<div class="graphpage">
+  <div id="canvas">
+    <div id="graph"></div>
+    <div id="legend"></div>
+    <div id="hover"></div>
+  </div>
+
+  <aside class="gpanel">
+    <h2>Selected</h2>
+    <div id="selected"><span class="empty">Click a node.</span></div>
+
+    <h2>Types</h2>
+    <div id="typeFilters" class="row"></div>
+
+    <h2>Item status</h2>
+    <div id="statusFilters" class="row"></div>
+
+    <h2>Date range <span class="hint">(first seen … resolved)</span></h2>
+    <div class="range">
+      <div class="track"></div><div class="fill" id="rangeFill"></div>
+      <input type="range" id="dateFrom" min="0" max="0" value="0" step="1" aria-label="Date from">
+      <input type="range" id="dateTo" min="0" max="0" value="0" step="1" aria-label="Date to">
+    </div>
+    <div class="dates"><span id="dateFromLabel">–</span><span id="dateToLabel">–</span></div>
+    <div class="row" style="margin-top:8px">
+      <button id="clearDates" class="secondary small">Clear dates</button>
+    </div>
+
+    <h2>Scope</h2>
+    <div class="row" style="gap:10px">
+      <label class="check"><input type="checkbox" id="includeBriefs"> include briefs / reviews / sweeps</label>
+      <label class="check"><input type="checkbox" id="includeOrphans" checked> include unlinked nodes</label>
+    </div>
+
+    <h2>Patterns</h2>
+    <ul id="patterns"><li class="empty">Loading…</li></ul>
+  </aside>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/force-graph@1.47.0/dist/force-graph.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  const GRAPH_URL = {{ graph_json_url | default("/api/graph.json") | tojson }};
+  const PATTERNS_URL = {{ patterns_url | default("/api/graph/patterns") | tojson }};
+
+  // ----- theme -----
+  // graph data colours live on .graphpage, everything else inherits from :root
+  const themeRoot = document.querySelector('.graphpage') || document.documentElement;
+  const css = () => getComputedStyle(themeRoot);
+  const cv = (name) => css().getPropertyValue(name).trim();
+  const TYPE_COLORS = () => ({
+    person: cv('--c-person'), project: cv('--c-project'), meeting: cv('--c-meeting'),
+    brief: cv('--c-brief'), review: cv('--c-brief'), sweep: cv('--c-brief'), note: cv('--c-note'),
+    source: cv('--c-source'), phantom: cv('--c-phantom'),
+  });
+  const STATUS_COLORS = () => ({
+    open: cv('--c-open'), resolved: cv('--c-resolved'), watch: cv('--c-watch'), dismissed: cv('--c-dismissed'),
+  });
+  let typeColors = TYPE_COLORS(), statusColors = STATUS_COLORS();
+  const nodeColor = (n) => n.type === 'item' ? (statusColors[n.status] || statusColors.watch) : (typeColors[n.type] || cv('--text-3'));
+  const withAlpha = (hex, a) => {
+    if (!hex) return `rgba(128,128,128,${a})`;
+    if (hex.startsWith('rgb')) return hex.replace(/rgba?\(([^)]+)\)/, (m, inner) => `rgba(${inner.split(',').slice(0,3).join(',')},${a})`);
+    const h = hex.replace('#', ''); const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    const n = parseInt(full, 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+  };
+
+  // ----- state -----
+  const qs = new URLSearchParams(location.search);
+  const state = {
+    focus: qs.get('focus') || null,
+    depth: Math.min(3, Math.max(1, parseInt(qs.get('depth') || '1', 10) || 1)),
+    date_from: qs.get('date_from') || null,
+    date_to: qs.get('date_to') || null,
+    include_briefs: qs.get('include_briefs') === '1' || qs.get('include_briefs') === 'true',
+    include_orphans: !(qs.get('include_orphans') === '0' || qs.get('include_orphans') === 'false'),
+    project: qs.get('project') || null,
+    person: qs.get('person') || null,
+    hiddenTypes: new Set(), hiddenStatuses: new Set(),
+    search: '', selected: null, highlight: new Set(), pulse: null,
+  };
+  let data = { nodes: [], links: [], meta: {} };
+  let byId = new Map();
+
+  // ----- elements -----
+  const $ = (id) => document.getElementById(id);
+  const el = { graph: $('graph'), hover: $('hover'), status: $('status'), legend: $('legend'), search: $('search'),
+    selected: $('selected'), typeFilters: $('typeFilters'), statusFilters: $('statusFilters'),
+    dateFrom: $('dateFrom'), dateTo: $('dateTo'), dateFromLabel: $('dateFromLabel'), dateToLabel: $('dateToLabel'),
+    rangeFill: $('rangeFill'), clearDates: $('clearDates'), includeBriefs: $('includeBriefs'), includeOrphans: $('includeOrphans'),
+    focusRow: $('focusRow'), focusName: $('focusName'), depthLabel: $('depthLabel'), exitFocus: $('exitFocus'), patterns: $('patterns') };
+
+  // ----- force-graph -----
+  const fg = ForceGraph()(el.graph)
+    .backgroundColor(cv('--bg'))
+    .nodeId('id')
+    .nodeLabel(() => '')
+    .nodeVal((n) => 1 + Math.sqrt(n.degree || 0))
+    .linkColor((l) => isDimmed(l.source) || isDimmed(l.target) ? withAlpha(cv('--link'), cv('--dim')) : cv('--link'))
+    .linkWidth((l) => (l.kind === 'mention' || l.kind === 'source') ? 0.6 : 1.2)
+    .linkLineDash((l) => l.kind === 'source' ? [2, 3] : null)
+    .nodeCanvasObject(drawNode)
+    .nodePointerAreaPaint((n, color, ctx) => { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(n.x, n.y, radius(n) + 2, 0, 2 * Math.PI); ctx.fill(); })
+    .onNodeHover(onHover)
+    .onNodeClick(onClick)
+    .onBackgroundClick(() => select(null))
+    .onEngineStop(() => { if (fitPending) { fitPending = false; fitView(); } })
+    .cooldownTicks(200)
+    .d3AlphaDecay(0.03)
+    .d3VelocityDecay(0.3);
+  // isolated nodes would otherwise be flung to the edge and ruin the fit
+  fg.d3Force('charge').strength((n) => (n.degree || 0) > 0 ? -60 : -8);
+  let fitPending = false;
+  function fitView() {
+    const anyLinked = fg.graphData().nodes.some((n) => (n.degree || 0) > 0);
+    fg.zoomToFit(400, 40, (n) => !anyLinked || (n.degree || 0) > 0);
+  }
+
+  function radius(n) { return 3 + Math.sqrt(n.degree || 0) * 1.6; }
+  function isDimmed(n) {
+    if (!n || typeof n !== 'object') return false;
+    if (state.search && !state.highlight.has(n.id)) return true;
+    if (state.selected && state.highlight.size && !state.highlight.has(n.id)) return true;
+    return false;
+  }
+  function drawNode(n, ctx, scale) {
+    const r = radius(n), dim = isDimmed(n);
+    const base = nodeColor(n), col = dim ? withAlpha(base, cv('--dim')) : base;
+    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
+    if (n.type === 'phantom') {
+      ctx.setLineDash([2, 2]); ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.stroke(); ctx.setLineDash([]);
+    } else { ctx.fillStyle = col; ctx.fill(); }
+    if (n.type === 'item' && n.status === 'open' && n.item_type === 'slipping' && !dim) {
+      ctx.strokeStyle = cv('--text'); ctx.lineWidth = 0.8; ctx.stroke();
+    }
+    if (state.pulse === n.id || state.selected === n.id) {
+      ctx.beginPath(); ctx.arc(n.x, n.y, r + 4, 0, 2 * Math.PI);
+      ctx.strokeStyle = cv('--accent'); ctx.lineWidth = 2; ctx.stroke();
+    }
+    const showLabel = !dim && (scale > 1.6 || n.type !== 'item' || state.highlight.has(n.id) || (n.degree || 0) >= 6);
+    if (showLabel) {
+      const fs = Math.max(10 / scale, 2.5);
+      ctx.font = `${n.type === 'item' ? '' : '600 '}${fs}px -apple-system, Segoe UI, Roboto, sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillStyle = withAlpha(cv('--text'), n.type === 'item' ? 0.75 : 0.95);
+      const label = n.label.length > 42 ? n.label.slice(0, 41) + '…' : n.label;
+      ctx.fillText(label, n.x, n.y + r + 1.5);
+    }
+  }
+
+  // ----- hover / click -----
+  function onHover(n) {
+    el.graph.style.cursor = n ? 'pointer' : '';
+    if (!n) { el.hover.style.display = 'none'; return; }
+    const meta = [n.type, n.status, n.item_type, n.date ? 'since ' + n.date : null, n.resolved ? 'until ' + n.resolved : null,
+      n.tier ? 'tier ' + n.tier : null, n.weight != null ? 'weight ' + n.weight : null, (n.degree || 0) + ' links']
+      .filter(Boolean).join(' · ');
+    el.hover.innerHTML = `<div class="name">${esc(n.label)}</div><div class="meta">${esc(meta)}</div>${n.preview ? `<div>${esc(n.preview)}</div>` : ''}`;
+    el.hover.style.display = 'block';
+  }
+  el.graph.addEventListener('mousemove', (e) => {
+    const rect = el.graph.getBoundingClientRect();
+    const x = e.clientX - rect.left + 14, y = e.clientY - rect.top + 14;
+    el.hover.style.left = Math.min(x, rect.width - el.hover.offsetWidth - 8) + 'px';
+    el.hover.style.top = Math.min(y, rect.height - el.hover.offsetHeight - 8) + 'px';
+  });
+
+  function nodeHref(n) {
+    if (n.type === 'item') return '/ledger?focus=' + encodeURIComponent(n.id);
+    if (n.type === 'source' || n.type === 'phantom') return null;
+    return '/note/' + encodeURIComponent(n.id);
+  }
+  function onClick(n) { select(n.id); }
+
+  function select(id) {
+    state.selected = id;
+    state.highlight = new Set();
+    if (id && byId.has(id)) {
+      state.highlight.add(id);
+      for (const l of data.links) {
+        const s = l.source.id || l.source, t = l.target.id || l.target;
+        if (s === id) state.highlight.add(t);
+        if (t === id) state.highlight.add(s);
+      }
+    }
+    renderSelected();
+    fg.nodeColor(fg.nodeColor()); // trigger repaint
+  }
+
+  function renderSelected() {
+    const n = state.selected ? byId.get(state.selected) : null;
+    if (!n) { el.selected.innerHTML = '<span class="empty">Click a node.</span>'; return; }
+    const href = nodeHref(n);
+    const meta = [n.type, n.status, n.item_type, n.date ? 'since ' + n.date : null, (n.degree || 0) + ' links'].filter(Boolean).join(' · ');
+    el.selected.innerHTML = `
+      <div class="name">${esc(n.label)}</div>
+      <div class="meta">${esc(meta)}</div>
+      ${n.preview ? `<div class="preview">${esc(n.preview)}</div>` : ''}
+      <div class="row">
+        <button class="primary" data-depth="1">Focus</button>
+        <select id="focusDepth" style="width:auto"><option value="1"${state.depth === 1 ? ' selected' : ''}>depth 1</option><option value="2"${state.depth === 2 ? ' selected' : ''}>depth 2</option><option value="3"${state.depth === 3 ? ' selected' : ''}>depth 3</option></select>
+        ${href ? `<a href="${href}">Open ${n.type === 'item' ? 'in ledger' : 'note'} →</a>` : ''}
+        ${n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">Source ↗</a>` : ''}
+      </div>`;
+    el.selected.querySelector('button').addEventListener('click', () => {
+      state.focus = n.id; state.depth = parseInt(el.selected.querySelector('#focusDepth').value, 10) || 1; reload();
+    });
+  }
+
+  // ----- search -----
+  el.search.addEventListener('input', () => {
+    state.search = el.search.value.trim().toLowerCase();
+    state.highlight = new Set();
+    if (state.search) for (const n of data.nodes) if (n.label.toLowerCase().includes(state.search) || n.id.toLowerCase().includes(state.search)) state.highlight.add(n.id);
+    fg.nodeColor(fg.nodeColor());
+  });
+
+  // ----- filters (client-side) -----
+  const TYPE_ORDER = ['item', 'person', 'project', 'meeting', 'source', 'phantom', 'brief', 'review', 'sweep', 'note'];
+  function renderFilterBoxes() {
+    const types = (data.meta.types || []).slice().sort((a, b) => TYPE_ORDER.indexOf(a) - TYPE_ORDER.indexOf(b));
+    el.typeFilters.innerHTML = types.map((t) => `<label class="chk"><input type="checkbox" data-type="${t}"${state.hiddenTypes.has(t) ? '' : ' checked'}>
+      <span class="sw ${t === 'phantom' ? 'phantom' : ''}" style="${t === 'phantom' ? '' : 'background:' + (typeColors[t] || (t === 'item' ? statusColors.open : cv('--text-3')))}"></span>${t}</label>`).join('');
+    const statuses = data.meta.statuses || ['open', 'resolved', 'watch', 'dismissed'];
+    el.statusFilters.innerHTML = statuses.map((s) => `<label class="chk"><input type="checkbox" data-status="${s}"${state.hiddenStatuses.has(s) ? '' : ' checked'}>
+      <span class="sw" style="background:${statusColors[s]}"></span>${s}</label>`).join('');
+    el.typeFilters.querySelectorAll('input').forEach((i) => i.addEventListener('change', () => { toggle(state.hiddenTypes, i.dataset.type, !i.checked); applyClientFilters(); }));
+    el.statusFilters.querySelectorAll('input').forEach((i) => i.addEventListener('change', () => { toggle(state.hiddenStatuses, i.dataset.status, !i.checked); applyClientFilters(); }));
+    el.legend.innerHTML = [['open item', statusColors.open], ['resolved', statusColors.resolved], ['watch', statusColors.watch],
+      ['person', typeColors.person], ['project', typeColors.project], ['meeting', typeColors.meeting], ['source', typeColors.source]]
+      .map(([k, c]) => `<span class="it"><span class="sw" style="background:${c}"></span>${k}</span>`).join('') +
+      `<span class="it"><span class="sw phantom"></span>unresolved</span>`;
+  }
+  function toggle(set, v, on) { if (on) set.add(v); else set.delete(v); }
+  function visible(n) {
+    if (state.hiddenTypes.has(n.type)) return false;
+    if (n.type === 'item' && state.hiddenStatuses.has(n.status)) return false;
+    return true;
+  }
+  function applyClientFilters() {
+    const nodes = data.nodes.filter(visible);
+    const ids = new Set(nodes.map((n) => n.id));
+    const links = data.links.filter((l) => ids.has(l.source.id || l.source) && ids.has(l.target.id || l.target));
+    fg.graphData({ nodes, links });
+    el.status.textContent = `${nodes.length} nodes · ${links.length} links` + (data.meta.total_nodes ? ` (of ${data.meta.total_nodes})` : '');
+  }
+
+  // ----- date range (server-side) -----
+  let dayMin = null, dayMax = null;
+  const DAY = 86400000;
+  const toDay = (iso) => Math.round(Date.parse(iso + 'T00:00:00Z') / DAY);
+  const fromDay = (d) => new Date(d * DAY).toISOString().slice(0, 10);
+  function setupRange() {
+    const min = data.meta.date_min, max = data.meta.date_max;
+    if (!min || !max) { el.dateFromLabel.textContent = el.dateToLabel.textContent = '–'; return; }
+    dayMin = toDay(min); dayMax = Math.max(toDay(max), dayMin + 1);
+    for (const r of [el.dateFrom, el.dateTo]) { r.min = dayMin; r.max = dayMax; }
+    el.dateFrom.value = state.date_from ? Math.max(dayMin, toDay(state.date_from)) : dayMin;
+    el.dateTo.value = state.date_to ? Math.min(dayMax, toDay(state.date_to)) : dayMax;
+    paintRange();
+  }
+  function paintRange() {
+    const a = +el.dateFrom.value, b = +el.dateTo.value, span = Math.max(1, dayMax - dayMin);
+    el.dateFromLabel.textContent = fromDay(Math.min(a, b));
+    el.dateToLabel.textContent = fromDay(Math.max(a, b));
+    el.rangeFill.style.left = (6 + ((Math.min(a, b) - dayMin) / span) * (el.dateFrom.offsetWidth - 12)) + 'px';
+    el.rangeFill.style.width = (((Math.abs(b - a)) / span) * (el.dateFrom.offsetWidth - 12)) + 'px';
+  }
+  for (const r of [el.dateFrom, el.dateTo]) {
+    r.addEventListener('input', paintRange);
+    r.addEventListener('change', () => {
+      const a = Math.min(+el.dateFrom.value, +el.dateTo.value), b = Math.max(+el.dateFrom.value, +el.dateTo.value);
+      state.date_from = a > dayMin ? fromDay(a) : null;
+      state.date_to = b < dayMax ? fromDay(b) : null;
+      reload();
+    });
+  }
+  el.clearDates.addEventListener('click', () => { state.date_from = state.date_to = null; reload(); });
+
+  // ----- scope toggles -----
+  el.includeBriefs.checked = state.include_briefs;
+  el.includeOrphans.checked = state.include_orphans;
+  el.includeBriefs.addEventListener('change', () => { state.include_briefs = el.includeBriefs.checked; reload(); });
+  el.includeOrphans.addEventListener('change', () => { state.include_orphans = el.includeOrphans.checked; reload(); });
+  el.exitFocus.addEventListener('click', () => { state.focus = null; reload(); });
+
+  // ----- loading -----
+  function queryParams() {
+    const p = new URLSearchParams();
+    if (state.focus) { p.set('focus', state.focus); p.set('depth', String(state.depth)); }
+    if (state.date_from) p.set('date_from', state.date_from);
+    if (state.date_to) p.set('date_to', state.date_to);
+    if (state.project) p.set('project', state.project);
+    if (state.person) p.set('person', state.person);
+    if (state.include_briefs) p.set('include_briefs', '1');
+    if (!state.include_orphans) p.set('include_orphans', '0');
+    return p;
+  }
+  async function reload() {
+    const p = queryParams();
+    el.status.textContent = 'Loading…';
+    history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p : ''));
+    try {
+      const res = await fetch(GRAPH_URL + (GRAPH_URL.includes('?') ? '&' : '?') + p.toString(), { headers: { Accept: 'application/json' } });
+      if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+      data = await res.json();
+    } catch (e) {
+      el.status.textContent = 'Could not load graph: ' + e.message; return;
+    }
+    byId = new Map(data.nodes.map((n) => [n.id, n]));
+    renderFilterBoxes();
+    setupRange();
+    el.focusRow.style.display = state.focus ? '' : 'none';
+    if (state.focus) { el.focusName.textContent = (byId.get(state.focus) || { label: state.focus }).label; el.depthLabel.textContent = state.depth; }
+    applyClientFilters();
+    if (state.selected && !byId.has(state.selected)) state.selected = null;
+    select(state.selected || (state.focus && byId.has(state.focus) ? state.focus : null));
+    fitPending = true;
+    setTimeout(fitView, 700);
+  }
+
+  async function loadPatterns() {
+    try {
+      const res = await fetch(PATTERNS_URL, { headers: { Accept: 'application/json' } });
+      if (!res.ok) throw new Error(res.status);
+      const list = await res.json();
+      const items = Array.isArray(list) ? list : (list.patterns || []);
+      if (!items.length) { el.patterns.innerHTML = '<li class="empty">Nothing stands out.</li>'; return; }
+      el.patterns.innerHTML = items.map((p, i) => `<li data-i="${i}" data-focus="${esc(p.focus || '')}" title="${esc(p.kind || '')}">
+        <span class="sev sev${p.severity || 1}"></span><span>${esc(p.text || '').replace(/\[\[([^\]]+)\]\]/g, '<b>$1</b>')}</span></li>`).join('');
+      el.patterns.querySelectorAll('li').forEach((li) => li.addEventListener('click', () => {
+        el.patterns.querySelectorAll('li').forEach((x) => x.classList.remove('active')); li.classList.add('active');
+        goTo(li.dataset.focus);
+      }));
+    } catch (e) {
+      el.patterns.innerHTML = `<li class="empty">Patterns unavailable (${esc(e.message)}).</li>`;
+    }
+  }
+
+  async function goTo(id) {
+    if (!id) return;
+    if (!byId.has(id)) {
+      // hidden by the current server-side filters: widen to a local graph around it
+      state.focus = id; state.depth = Math.max(state.depth, 2); await reload();
+      if (!byId.has(id)) return;
+    }
+    const n = byId.get(id);
+    if (state.hiddenTypes.has(n.type) || (n.type === 'item' && state.hiddenStatuses.has(n.status))) {
+      state.hiddenTypes.delete(n.type); if (n.type === 'item') state.hiddenStatuses.delete(n.status);
+      renderFilterBoxes(); applyClientFilters();
+    }
+    select(id);
+    const centre = () => {
+      if (n.x == null) { setTimeout(centre, 120); return; }
+      fg.centerAt(n.x, n.y, 600); fg.zoom(Math.max(fg.zoom(), 2.5), 600);
+      state.pulse = id; fg.nodeColor(fg.nodeColor());
+      setTimeout(() => { state.pulse = null; fg.nodeColor(fg.nodeColor()); }, 2500);
+    };
+    centre();
+  }
+
+  function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+  // ----- sizing / theme changes -----
+  function resize() { const r = el.graph.getBoundingClientRect(); fg.width(r.width).height(r.height); }
+  window.addEventListener('resize', () => { resize(); paintRange(); });
+  if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    typeColors = TYPE_COLORS(); statusColors = STATUS_COLORS(); fg.backgroundColor(cv('--bg')); renderFilterBoxes(); fg.nodeColor(fg.nodeColor());
+  });
+  resize();
+  reload();
+  loadPatterns();
+})();
+</script>
+{% endblock %}

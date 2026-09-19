@@ -1,0 +1,195 @@
+{#- Email brief. Gmail is not a browser: inline styles only, tables for layout, literal hex,
+    bgcolor attributes alongside every background, no webfonts, no images, no JavaScript.
+    Visual language matches the portal (src/nbrain/web/static/app.css), light mode only. -#}
+{%- set p = palette -%}
+{%- set FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" -%}
+
+{%- macro metric(label, value, tone) -%}
+{%- set fg = p.danger_fg if tone == 'danger' else (p.warn_fg if tone == 'warn' else p.text) -%}
+{%- set bg = p.danger_bg if tone == 'danger' else (p.warn_bg if tone == 'warn' else p.card) -%}
+{%- set bd = p.danger_border if tone == 'danger' else (p.warn_border if tone == 'warn' else p.border) -%}
+<td width="25%" bgcolor="{{ bg }}" style="background:{{ bg }};border:1px solid {{ bd }};border-radius:10px;padding:10px 9px">
+<div style="font-size:22px;font-weight:600;line-height:1.2;color:{{ fg }}">{{ value }}</div>
+<div style="font-size:11px;color:{{ p.muted }};padding-top:2px">{{ label }}</div></td>
+{%- endmacro -%}
+
+{%- macro badge(kind) -%}
+{%- if kind == 'overdue' -%}{{ pill('overdue', p.danger_bg, p.danger_fg, p.danger_border) }}
+{%- elif kind == 'today' -%}{{ pill('today', p.warn_bg, p.warn_fg, p.warn_border) }}
+{%- elif kind == 'verified' -%}{{ pill('verified', p.ok_bg, p.ok_fg, p.ok_border) }}
+{%- else -%}{{ pill('unconfirmed', p.surface, p.muted, p.border) }}{%- endif -%}
+{%- endmacro -%}
+
+{%- macro pill(text, bg, fg, bd) -%}
+<span style="background:{{ bg }};color:{{ fg }};border:1px solid {{ bd }};font-size:11px;line-height:16px;padding:1px 8px;border-radius:999px;white-space:nowrap">{{ text }}</span>
+{%- endmacro -%}
+
+{%- macro h(text) -%}
+<tr><td style="padding:22px 0 7px">
+<div style="font-size:10px;font-weight:600;letter-spacing:.07em;color:{{ p.muted }};border-bottom:1px solid {{ p.border }};padding-bottom:6px">{{ text|upper }}</div>
+</td></tr>
+{%- endmacro -%}
+
+{%- macro row(i, extra='') -%}
+<tr>
+<td style="padding:9px 0;border-bottom:1px solid {{ p.border }};font-size:13px">
+{% if i.url %}<a href="{{ i.url }}" style="color:{{ p.accent }};text-decoration:none;font-weight:600">{{ i.title }}</a>{% else %}<span style="color:{{ p.text }};font-weight:600">{{ i.title }}</span> <span style="color:{{ p.muted }}">(no link)</span>{% endif %}
+<div style="color:{{ p.muted }};font-size:12px;padding-top:2px">
+{%- if i.promised_to %}{{ i.promised_to|unlink }} · {% endif -%}
+{%- if i.project %}{{ i.project|unlink }} · {% endif -%}
+{{ i|age(today) }}{% if extra %} · {{ extra }}{% endif %}</div></td>
+<td width="92" align="right" valign="top" style="padding:9px 0;border-bottom:1px solid {{ p.border }}">{{ badge(i|badge(today)) }}</td>
+</tr>
+{%- endmacro -%}
+
+{%- macro lines(items) -%}
+<tr><td colspan="2" style="padding:2px 0 0;font-size:13px;color:{{ p.text2 }}">
+{%- for l in items %}{{ l }}{% if not loop.last %}<br>{% endif %}{% endfor -%}
+</td></tr>
+{%- endmacro -%}
+
+<div style="margin:0;padding:24px 10px;background:{{ p.page_bg }};font-family:{{ FONT }}">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="{{ p.page_bg }}" style="background:{{ p.page_bg }};border-collapse:collapse">
+<tr><td align="center" style="padding:0">
+
+<table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" bgcolor="{{ p.card }}" style="width:100%;max-width:640px;background:{{ p.card }};border:1px solid {{ p.border }};border-radius:14px;border-collapse:separate">
+<tr><td style="padding:18px 18px 20px;font-family:{{ FONT }};font-size:14px;line-height:1.55;color:{{ p.text }}">
+
+{#- brand row -#}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-bottom:16px"><tr>
+<td width="26" valign="middle" style="padding:0 8px 0 0">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+  <td width="24" height="24" align="center" valign="middle" bgcolor="{{ p.accent }}" style="background:{{ p.accent }};border-radius:6px;color:#FFFFFF;font-size:13px;font-weight:700;font-family:{{ FONT }}">n</td>
+  </tr></table>
+</td>
+<td valign="middle" style="font-size:14px;font-weight:600;color:{{ p.text }};letter-spacing:-.01em">nbrain</td>
+<td align="right" valign="middle" style="font-size:12px;color:{{ p.muted }}">{{ today.strftime('%A %d %B %Y') }}</td>
+</tr></table>
+
+{#- metric strip -#}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="6" border="0" style="border-collapse:separate;margin:0 0 14px"><tr>
+{{ metric('Due today', m.urgent|length, 'danger' if m.urgent else 'plain') }}
+{{ metric('Waiting on you', m.waiting_on_me|length, 'warn' if m.waiting_on_me else 'plain') }}
+{{ metric('Oldest', (m.oldest_days ~ 'd') if m.oldest_days is not none else '–', 'plain') }}
+{{ metric('Delivered', m.delivery_score, 'plain') }}
+</tr></table>
+
+{#- today's one thing -#}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-bottom:4px"><tr>
+<td width="3" bgcolor="{{ p.accent }}" style="background:{{ p.accent }};border-radius:3px 0 0 3px;font-size:0;line-height:0">&nbsp;</td>
+<td bgcolor="{{ p.accent_bg }}" style="background:{{ p.accent_bg }};padding:11px 14px;border-radius:0 8px 8px 0">
+<div style="font-size:10px;font-weight:600;letter-spacing:.07em;color:{{ p.accent }};padding-bottom:3px">TODAY'S ONE THING</div>
+<div style="font-size:13px;color:{{ p.text }}">{{ b.one_thing }}</div>
+</td></tr></table>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse">
+
+{% if b.due_overflow and not b.due_today %}
+{{ h('Due today') }}
+<tr><td colspan="2" style="font-size:13px;color:{{ p.danger_fg }}">{{ b.due_overflow }} things are due or overdue today. That is a planning problem, not a to-do list — pick three in radar.md.</td></tr>
+{% elif b.due_today %}
+{{ h('Due today') }}
+{% for i in b.due_today %}{{ row(i) }}{% endfor %}
+{% endif %}
+
+{% if b.bottleneck %}
+{{ h('You are the bottleneck') }}
+{% for i in b.bottleneck %}{{ row(i) }}{% endfor %}
+{% endif %}
+
+<tr><td colspan="2" style="padding:18px 0 0">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse"><tr>
+<td width="2" bgcolor="{{ p.border_strong }}" style="background:{{ p.border_strong }};font-size:0;line-height:0">&nbsp;</td>
+<td style="padding:0 0 0 12px;font-style:italic;font-size:13px;color:{{ p.text2 }}">{{ b.assessment }}</td>
+</tr></table></td></tr>
+
+{{ h('Do this, in order') }}
+<tr><td colspan="2" style="padding-top:2px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-size:13px">
+{% for a in b.actions %}
+<tr>
+<td width="20" valign="top" style="padding:4px 0;color:{{ p.accent }};font-weight:600">{{ loop.index }}.</td>
+<td style="padding:4px 0;color:{{ p.text }}">{{ a.text }}{% if a.effort_hint %} <span style="color:{{ p.muted }}">{{ a.effort_hint }}.</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</table></td></tr>
+
+{% if 'priority_balance' in b.extras and m.priority_split %}
+{{ h('Priority balance') }}
+<tr><td colspan="2" style="padding-top:2px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-size:12px">
+{% for name, pct in m.priority_split.items() %}
+{% set bar = p.danger_line if (loop.first and m.imbalance) else p.accent %}
+<tr>
+<td width="130" style="padding:4px 8px 4px 0;color:{{ p.text2 }}">{{ name }}</td>
+<td style="padding:4px 0">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="{{ p.surface }}" style="background:{{ p.surface }};border-radius:999px;border-collapse:separate"><tr>
+  <td width="{{ [(pct*100)|round|int, 2]|max }}%" height="6" bgcolor="{{ bar }}" style="background:{{ bar }};border-radius:999px;font-size:0;line-height:0">&nbsp;</td>
+  <td style="font-size:0;line-height:0">&nbsp;</td>
+  </tr></table></td>
+<td width="42" align="right" style="padding:4px 0;color:{{ p.text2 }}">{{ (pct*100)|round|int }}%</td>
+</tr>
+{% endfor %}
+</table>
+{% if m.imbalance %}<div style="font-size:12px;color:{{ p.danger_fg }};padding-top:6px">One priority is starving the other ({{ m.imbalance_runs }} runs running).</div>{% endif %}
+</td></tr>
+{% endif %}
+
+{% if b.changed_lines %}
+{{ h('Changed since yesterday') }}
+{{ lines(b.changed_lines) }}
+{% endif %}
+
+{% if b.retractions %}
+{{ h('Retractions') }}
+{{ lines(b.retractions) }}
+{% endif %}
+
+{{ h('Waiting on you') }}
+{% if b.waiting %}
+{% for i in b.waiting %}{{ row(i) }}{% endfor %}
+{% if b.waiting_hidden %}<tr><td colspan="2" style="padding:7px 0 0;font-size:12px;color:{{ p.muted }}">+{{ b.waiting_hidden }} more in radar.md</td></tr>{% endif %}
+{% else %}
+<tr><td colspan="2" style="font-size:13px;color:{{ p.text2 }}">Nobody is waiting on you.</td></tr>
+{% endif %}
+
+{{ h('Slipping') }}
+{% if b.slipping %}
+{% for i in b.slipping %}{{ row(i, i.cause or '') }}{% endfor %}
+{% if b.slipping_hidden %}<tr><td colspan="2" style="padding:7px 0 0;font-size:12px;color:{{ p.muted }}">+{{ b.slipping_hidden }} more in radar.md</td></tr>{% endif %}
+{% else %}
+<tr><td colspan="2" style="font-size:13px;color:{{ p.text2 }}">Nothing is slipping.</td></tr>
+{% endif %}
+
+{% if b.commitments %}
+{{ h('Commitments still open') }}
+{% for i in b.commitments %}{{ row(i) }}{% endfor %}
+{% if b.commitments_hidden %}<tr><td colspan="2" style="padding:7px 0 0;font-size:12px;color:{{ p.muted }}">+{{ b.commitments_hidden }} more in radar.md</td></tr>{% endif %}
+{% endif %}
+
+{{ h("Today's meetings") }}
+<tr><td colspan="2" style="font-size:13px">
+{% for mt in b.meetings_action %}
+<div style="padding:3px 0"><span style="color:{{ p.text2 }}">{{ mt.time }}</span> {% if mt.url %}<a href="{{ mt.url }}" style="color:{{ p.accent }};text-decoration:none;font-weight:600">{{ mt.title }}</a>{% else %}<b>{{ mt.title }}</b>{% endif %} <span style="color:{{ p.muted }}">— {{ mt.why }}</span></div>
+{% endfor %}
+{% for n in b.meeting_notes %}<div style="padding:2px 0;color:{{ p.text2 }};font-style:italic">{{ n }}</div>{% endfor %}
+{% if b.meetings_other %}<div style="color:{{ p.muted }}">{{ b.meetings_other }} other meeting(s) need nothing from you.</div>{% elif not b.meetings_action %}<span style="color:{{ p.text2 }}">No meetings needing action today.</span>{% endif %}
+</td></tr>
+
+{% if b.tomorrow %}
+{{ h('Tomorrow') }}
+{{ lines(b.tomorrow) }}
+{% endif %}
+
+</table>
+
+<div style="border-top:1px solid {{ p.border }};margin-top:22px;padding-top:12px;font-size:11px;color:{{ p.muted }}">{{ b.not_checked }}</div>
+
+</td></tr></table>
+
+<div style="width:100%;max-width:640px;padding:10px 4px 0;font-size:11px;color:{{ p.muted }};font-family:{{ FONT }};text-align:left">
+Read-only: nbrain observes and reports. Nothing was changed in any of your systems.
+</div>
+
+</td></tr></table>
+</div>

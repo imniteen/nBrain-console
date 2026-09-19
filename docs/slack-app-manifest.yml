@@ -1,0 +1,30 @@
+# nbrain Slack app manifest.
+# api.slack.com/apps -> Create New App -> From a manifest -> pick workspace -> YAML -> paste this.
+#
+# User-token scopes only, all read. nbrain reads your own messages (where commitments live) and
+# mentions you have not answered. It never posts.
+#
+# To have the daily brief delivered to your own Slack DM, uncomment chat:write below. That is the
+# only write scope nbrain can use, and it only ever messages you.
+display_information:
+  name: nbrain
+  description: Read-only work tracker. Finds commitments you made and mentions you have not answered.
+  background_color: "#2c2c2a"
+oauth_config:
+  scopes:
+    user:
+      - search:read        # primary path: find your own messages and mentions
+      - channels:history   # read messages in public channels you are in
+      - groups:history     # ... private channels
+      - im:history         # ... direct messages
+      - mpim:history       # ... group direct messages
+      - channels:read      # list conversations, used when search is unavailable
+      - groups:read
+      - im:read
+      - mpim:read
+      - users:read         # resolve user ids to names
+      # - chat:write        # optional: only for brief delivery to your own DM
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+
+{% macro text(name, value, label, type="text", hint="", step="") -%}
+<label class="field"><span>{{ label }}</span>
+  <input type="{{ type }}" name="{{ name }}" value="{{ '' if value is none else value }}" {% if step %}step="{{ step }}"{% endif %}>
+  {% if hint %}<small>{{ hint }}</small>{% endif %}</label>
+{%- endmacro %}
+
+{% macro check(name, value, label) -%}
+<label class="check"><input type="checkbox" name="{{ name }}" value="1" {% if value %}checked{% endif %}> {{ label }}</label>
+{%- endmacro %}
+
+{% macro listfield(name, value, label, hint="") -%}
+<label class="field"><span>{{ label }}</span>
+  <input type="text" name="{{ name }}" value="{{ (value or [])|join(', ') }}">
+  <small>{{ hint or 'comma-separated' }}</small></label>
+{%- endmacro %}
+
+{% macro llm(task, v) -%}
+{% set p = 'llm.' ~ task ~ '.' %}
+<div class="grid">
+  <label class="field"><span>Provider</span>
+    <select name="{{ p }}provider">{% for pr in providers %}<option value="{{ pr }}" {% if v.provider == pr %}selected{% endif %}>{{ pr }}</option>{% endfor %}</select></label>
+  {{ text(p ~ 'model', v.model, 'Model') }}
+  {{ text(p ~ 'api_key_env', v.api_key_env, 'API key env var', hint='blank = provider default') }}
+  {{ text(p ~ 'base_url', v.base_url, 'Base URL', hint='OpenAI-compatible / Ollama / OpenRouter') }}
+  {{ text(p ~ 'region', v.region, 'AWS region (Bedrock)') }}
+  {{ text(p ~ 'profile', v.profile, 'AWS profile (Bedrock)') }}
+  {{ text(p ~ 'refresh_command', v.refresh_command, 'Credential refresh command') }}
+  <label class="field"><span>Output mode</span>
+    <select name="{{ p }}output_mode">{% for m in output_modes %}<option value="{{ m }}" {% if v.output_mode == m %}selected{% endif %}>{{ m }}</option>{% endfor %}</select></label>
+  {{ text(p ~ 'max_tokens', v.max_tokens, 'Max tokens', type='number') }}
+  {{ text(p ~ 'timeout_seconds', v.timeout_seconds, 'Timeout (s)', type='number', step='any') }}
+  {{ text(p ~ 'temperature', v.temperature, 'Temperature', type='number', step='any', hint='blank = provider default') }}
+  {{ check(p ~ 'anthropic_fallbacks', v.anthropic_fallbacks, 'Anthropic refusal fallbacks') }}
+</div>
+{%- endmacro %}
+
+{% block content %}
+<nav class="subnav" aria-label="Settings sections">
+  {% for key, label, blurb in sections %}
+  <a href="/settings/{{ key }}" {% if key == section %}class="active" aria-current="page"{% endif %} title="{{ blurb }}">{{ label }}</a>
+  {% endfor %}
+</nav>
+
+{% for key, label, blurb in sections %}{% if key == section %}
+<p class="muted small subnav-blurb">{{ blurb }} · saved to <code>{{ config_path }}</code>, re-read before every sweep.</p>
+{% endif %}{% endfor %}
+
+{% if error %}<div class="alert danger"><b>Not saved.</b> {{ error }}</div>{% endif %}
+{% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
+
+{% if section == 'secrets' %}
+<section class="card">
+  <h2>Secrets</h2>
+  <p class="muted small">Values are never shown or stored in config.yaml. Only whether each referenced variable currently resolves (env, <code>nbrain/.env</code>, or keyring).</p>
+  <table class="list">
+    <tbody>
+    {% for s in secrets %}
+    <tr><td><code>{{ s.env }}</code></td><td><span class="pill {{ 'ok' if s.set else 'danger' }}">{{ 'set' if s.set else 'missing' }}</span></td><td class="small muted">{{ s.used_by }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="/settings/secret" class="grid" autocomplete="off">
+    {{ text('env_name', '', 'Env var name') }}
+    <label class="field"><span>Value</span><input type="password" name="value" autocomplete="new-password"></label>
+    <label class="field"><span>Store in</span>
+      <select name="store"><option value="dotenv">nbrain/.env (file, mode 600)</option><option value="keyring">OS keyring</option></select></label>
+    <div class="field"><span>&nbsp;</span><button type="submit" class="secondary">Store secret</button></div>
+  </form>
+</section>
+
+{% else %}
+<form method="post" action="/settings" class="settings">
+<input type="hidden" name="_section" value="{{ section }}">
+<input type="hidden" name="_bools" value="{{ section_bools }}">
+
+{% if section == 'profile' %}
+<section class="card">
+  <h2>You</h2>
+  <div class="grid">
+    {{ text('user.name', c.user.name, 'Name') }}
+    {{ text('user.first_name', c.user.first_name, 'First name') }}
+    {{ text('user.email', c.user.email, 'Email', type='email') }}
+    {{ text('user.timezone', c.user.timezone, 'Timezone', hint='IANA name, e.g. Europe/London') }}
+    {{ text('user.working_hours.start', c.user.working_hours.start, 'Working hours start') }}
+    {{ text('user.working_hours.end', c.user.working_hours.end, 'Working hours end') }}
+    {{ text('user.manager', c.user.manager, 'Manager') }}
+    <label class="field"><span>Role track</span>
+      <select name="role_track">{% for r in role_tracks %}<option value="{{ r }}" {% if c.role_track == r %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label>
+    {{ listfield('user.name_variants', c.user.name_variants, 'Name variants', 'how people write your name') }}
+    {{ listfield('user.name_collisions', c.user.name_collisions, 'Name collisions', 'other people who share your name') }}
+  </div>
+</section>
+
+{% elif section == 'model' %}
+<section class="card">
+  <h2>Default model</h2>
+  <p class="muted small">Used for every step unless a task below overrides it.</p>
+  {{ llm('default', c.llm.default) }}
+</section>
+<section class="card">
+  <h2>Per-task overrides</h2>
+  <p class="muted small">Extraction reads your messages and notes, writing produces the brief and the drafts, MCP drives configured servers. A cheaper or local model often suffices for extraction.</p>
+  {% for task in ['extract', 'write', 'mcp'] %}
+  {% set v = c.llm[task] %}
+  <h3>{{ check('llm.' ~ task ~ '.enabled', v is not none, 'Override for ' ~ task) }}</h3>
+  <details {% if v is not none %}open{% endif %}><summary class="muted small">{{ task }} model settings</summary>
+    {{ llm(task, v if v is not none else c.llm.default) }}
+  </details>
+  {% endfor %}
+</section>
+
+{% elif section == 'sources' %}
+<section class="card">
+  <h2>Native sources</h2>
+  <h3>{{ check('sources.google.enabled', c.sources.google.enabled, 'Google Workspace') }}</h3>
+  <div class="grid">
+    {{ check('sources.google.gmail', c.sources.google.gmail, 'Gmail') }}
+    {{ check('sources.google.calendar', c.sources.google.calendar, 'Calendar') }}
+    {{ check('sources.google.chat', c.sources.google.chat, 'Chat') }}
+    {{ check('sources.google.drive_notes', c.sources.google.drive_notes, 'Drive meeting notes') }}
+    {{ text('sources.google.credentials_file', c.sources.google.credentials_file, 'Credentials file', hint='relative to nbrain/') }}
+    {{ text('sources.google.token_file', c.sources.google.token_file, 'Token file') }}
+    {{ text('sources.google.notes_query', c.sources.google.notes_query, 'Drive notes query') }}
+    {{ text('sources.google.max_threads', c.sources.google.max_threads, 'Max threads', type='number') }}
+    {{ text('sources.google.max_chat_messages', c.sources.google.max_chat_messages, 'Max chat messages', type='number') }}
+    {{ text('sources.google.max_notes_docs', c.sources.google.max_notes_docs, 'Max notes docs', type='number') }}
+  </div>
+  <h3>{{ check('sources.gitlab.enabled', c.sources.gitlab.enabled, 'GitLab') }}</h3>
+  <div class="grid">
+    {{ text('sources.gitlab.url', c.sources.gitlab.url, 'URL') }}
+    {{ text('sources.gitlab.token_env', c.sources.gitlab.token_env, 'Token env var') }}
+    {{ text('sources.gitlab.username', c.sources.gitlab.username, 'Username') }}
+    {{ listfield('sources.gitlab.projects', c.sources.gitlab.projects, 'Projects', 'path/with/namespace; empty = all visible') }}
+  </div>
+  <h3>{{ check('sources.slack.enabled', c.sources.slack.enabled, 'Slack') }}</h3>
+  <div class="grid">
+    {{ text('sources.slack.token_env', c.sources.slack.token_env, 'Token env var') }}
+    {{ text('sources.slack.user_id', c.sources.slack.user_id, 'User id') }}
+    {{ listfield('sources.slack.channels', c.sources.slack.channels, 'Channels', 'channel ids; empty = DMs + member channels') }}
+    {{ text('sources.slack.max_messages', c.sources.slack.max_messages, 'Max messages', type='number') }}
+  </div>
+  <h3>{{ check('sources.jira.enabled', c.sources.jira.enabled, 'Jira') }}</h3>
+  <div class="grid">
+    {{ text('sources.jira.url', c.sources.jira.url, 'URL') }}
+    {{ text('sources.jira.email', c.sources.jira.email, 'Email') }}
+    {{ text('sources.jira.token_env', c.sources.jira.token_env, 'Token env var') }}
+    {{ text('sources.jira.max_issues', c.sources.jira.max_issues, 'Max issues', type='number') }}
+    {{ text('sources.jira.jql_assigned', c.sources.jira.jql_assigned, 'JQL assigned') }}
+    {{ text('sources.jira.jql_reported', c.sources.jira.jql_reported, 'JQL reported') }}
+  </div>
+  <p class="muted small">Tokens live under <a href="/settings/secrets">Secrets</a>, never in config.yaml.</p>
+</section>
+
+<section class="card" id="mcp">
+  <h2>MCP servers</h2>
+  <p class="muted small">JSON list of server objects (<code>name</code>, <code>transport</code> stdio|http|sse, <code>command</code>/<code>args</code> or <code>url</code>, <code>roles</code>, <code>allow_write</code>, <code>tool_allow</code>, <code>tool_deny</code>, <code>headers_env</code>, <code>instructions</code>).</p>
+  <textarea name="mcp_servers_json" rows="10" spellcheck="false">{{ mcp_json }}</textarea>
+  <div class="grid">{{ text('mcp_config_file', c.mcp_config_file, 'Extra mcpServers JSON file', hint='optional Claude-Desktop-style file') }}</div>
+</section>
+
+{% elif section == 'sweep' %}
+<section class="card">
+  <h2>Schedule</h2>
+  <div class="grid">
+    {{ text('sweep.daily_time', c.sweep.daily_time, 'Daily time', hint='HH:MM') }}
+    {{ check('sweep.weekdays_only', c.sweep.weekdays_only, 'Weekdays only') }}
+    {{ check('sweep.weekly.enabled', c.sweep.weekly.enabled, 'Weekly review') }}
+    <label class="field"><span>Weekly day</span>
+      <select name="sweep.weekly.day">{% for d in ['mon','tue','wed','thu','fri','sat','sun'] %}<option value="{{ d }}" {% if c.sweep.weekly.day == d %}selected{% endif %}>{{ d }}</option>{% endfor %}</select></label>
+    {{ text('sweep.weekly.time', c.sweep.weekly.time, 'Weekly time') }}
+    {{ text('sweep.missed_run_grace_hours', c.sweep.missed_run_grace_hours, 'Missed run grace (hours)', type='number') }}
+  </div>
+</section>
+
+<section class="card">
+  <h2>What counts as late</h2>
+  <div class="grid">
+    {{ text('sweep.email_lookback_days', c.sweep.email_lookback_days, 'Email lookback (days)', type='number') }}
+    {{ text('sweep.commitment_lookback_days', c.sweep.commitment_lookback_days, 'Commitment lookback (days)', type='number') }}
+    {{ text('sweep.awaiting_reply_hours', c.sweep.awaiting_reply_hours, 'Awaiting reply (hours)', type='number') }}
+    {{ text('sweep.ticket_stale_days', c.sweep.ticket_stale_days, 'Ticket stale (days)', type='number') }}
+    {{ text('sweep.review_age_days', c.sweep.review_age_days, 'Review age (days)', type='number') }}
+    {{ text('sweep.unconfirmed_drop_after_runs', c.sweep.unconfirmed_drop_after_runs, 'Drop unconfirmed after runs', type='number') }}
+    {{ text('sweep.priority_imbalance_ratio', c.sweep.priority_imbalance_ratio, 'Priority imbalance ratio', type='number', step='any') }}
+    {{ text('sweep.per_source_timeout_seconds', c.sweep.per_source_timeout_seconds, 'Per-source timeout (s)', type='number', step='any') }}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Brief shape</h2>
+  <div class="grid">
+    {{ text('sweep.brief_word_cap', c.sweep.brief_word_cap, 'Brief word cap', type='number') }}
+    {{ text('sweep.urgent_max_lines', c.sweep.urgent_max_lines, 'Urgent max lines', type='number') }}
+  </div>
+  <h3>Extras</h3>
+  <div class="grid">
+    {% for e in extras_all %}
+    <label class="check"><input type="checkbox" name="sweep.extras" value="{{ e }}" {% if e in c.sweep.extras %}checked{% endif %}> {{ e }}</label>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card">
+  <h2>Noise</h2>
+  <div class="grid one">
+    {{ listfield('noise.mine', c.noise.mine, 'Automated senders that carry state', 'kept, treated as signals') }}
+    {{ listfield('noise.suppress', c.noise.suppress, 'Never surface') }}
+    {{ listfield('noise.phishing', c.noise.phishing, 'Phishing patterns') }}
+  </div>
+</section>
+
+{% elif section == 'delivery' %}
+<section class="card">
+  <h2>Where the brief goes</h2>
+  <div class="grid">
+    {{ check('delivery.file.enabled', c.delivery.file.enabled, 'Write brief to vault') }}
+    {{ check('delivery.file.html', c.delivery.file.html, 'Also write HTML') }}
+    {{ check('delivery.gmail_draft.enabled', c.delivery.gmail_draft.enabled, 'Gmail draft') }}
+    {{ text('delivery.gmail_draft.subject', c.delivery.gmail_draft.subject, 'Draft subject') }}
+    {{ check('delivery.gmail_send.enabled', c.delivery.gmail_send.enabled, 'Gmail send to self') }}
+    {{ text('delivery.gmail_send.subject', c.delivery.gmail_send.subject, 'Send subject') }}
+    {{ check('delivery.slack_dm.enabled', c.delivery.slack_dm.enabled, 'Slack DM') }}
+    {{ text('delivery.slack_dm.channel', c.delivery.slack_dm.channel, 'Slack DM channel', hint='blank = yourself') }}
+  </div>
+  <p class="muted small">A Gmail channel adds the compose or send scope, the one write nbrain is allowed, and it only ever addresses you. Re-run <code>nbrain auth google</code> after enabling it.</p>
+</section>
+
+{% elif section == 'advanced' %}
+<section class="card">
+  <h2>Web UI</h2>
+  <div class="grid">
+    {{ check('web.enabled', c.web.enabled, 'Start with the daemon') }}
+    {{ text('web.host', c.web.host, 'Host', hint='loopback only') }}
+    {{ text('web.port', c.web.port, 'Port', type='number') }}
+  </div>
+</section>
+{% endif %}
+
+<div class="row"><button type="submit">Save</button></div>
+</form>
+{% endif %}
+{% endblock %}

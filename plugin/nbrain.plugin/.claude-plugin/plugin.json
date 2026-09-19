@@ -1,0 +1,15 @@
+{
+  "name": "nbrain",
+  "version": "0.3.0",
+  "description": "Sets up a personal work-tracking system that monitors your whole work surface, keeps a running ledger of what is slipping and what you have promised, and delivers a short daily brief. Read-only by design: it observes and reports, you decide and act.",
+  "author": {
+    "name": "nbrain Project"
+  },
+  "keywords": [
+    "productivity",
+    "daily-brief",
+    "commitment-tracking",
+    "work-tracking",
+    "read-only"
+  ]
+}

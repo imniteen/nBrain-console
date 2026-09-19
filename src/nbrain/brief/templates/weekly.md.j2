@@ -1,0 +1,45 @@
+# Weekly review — {{ week }} ({{ start }} → {{ end }})
+
+_{{ d.narrative }}_
+
+## Commitment delivery
+**{{ delivered }}/{{ total }}** — {{ d.delivery_comment }}
+
+## What slipped and why
+{% if d.slipped %}
+{% for s in d.slipped %}
+- {{ s }}
+{% endfor %}
+{% else %}
+Nothing slipped this week.
+{% endif %}
+
+## Resolved this week
+{% if resolved %}
+{% for i in resolved %}
+- [[{{ i.id }}]] {{ i.title }}{% if i.promised_to %} → {{ i.promised_to }}{% endif %}
+{% endfor %}
+{% else %}
+None.
+{% endif %}
+
+## Priority balance over the week
+{% for name, pct in split.items() %}
+- {{ name }}: {{ (pct * 100)|round|int }}%
+{% else %}
+No project attribution recorded this week.
+{% endfor %}
+
+## Patterns
+{% for p in d.patterns %}
+- {{ p }}
+{% else %}
+- No patterns worth noting yet.
+{% endfor %}
+
+## One process change for next week
+{{ d.process_improvement }}
+
+---
+Still open: {{ open_count }} · watch list: {{ watch_count }} · sweeps this week: {{ sweeps }}
+{% if not_checked %}Blind spots: {{ not_checked }}{% endif %}

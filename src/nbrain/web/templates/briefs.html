@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block subtitle %}<span class="sub">{{ rows|length }} brief{{ '' if rows|length == 1 else 's' }} in the vault</span>{% endblock %}
+{% block actions %}<a class="small" href="/reviews">Weekly reviews →</a>{% endblock %}
+{% block content %}
+{% if rows %}
+<div class="table-wrap">
+<table class="list">
+  <thead><tr><th>Date</th><th>Day</th><th>Email version</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr><td><a href="/briefs/{{ r.date }}"><b>{{ r.date }}</b></a></td>
+      <td class="muted small">{{ r.date|weekday }}</td>
+      <td>{% if r.html %}<a href="/briefs/{{ r.date }}.html">Open HTML ↗</a>{% else %}<span class="muted">–</span>{% endif %}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="card"><div class="empty">
+  <svg class="ico"><use href="#i-briefs"></use></svg>
+  <b>No briefs yet</b>
+  <p>Run a sweep from the dashboard and the first brief will appear here.</p>
+</div></div>
+{% endif %}
+{% endblock %}

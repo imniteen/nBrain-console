@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block heading %}Today{% endblock %}
+{% block subtitle %}<span class="sub">{{ today.strftime('%A %d %B %Y') }}</span>{% endblock %}
+
+{% block actions %}
+<form method="post" action="/run" class="inline">
+  <label class="check"><input type="checkbox" name="dry_run" value="1"> dry run</label>
+  <label class="check"><input type="checkbox" name="skip_llm" value="1"> skip LLM</label>
+  <button type="submit" formaction="/run/weekly" class="secondary" {% if run_status.running %}disabled{% endif %}>Weekly review</button>
+  <button type="submit" {% if run_status.running %}disabled{% endif %}>Run sweep</button>
+</form>
+{% endblock %}
+
+{% block content %}
+{% if started %}<div class="alert info">Sweep started. Progress appears below.</div>{% endif %}
+
+{% if metrics %}
+<section class="metrics">
+  <a class="metric{% if metrics.urgent %} is-danger{% endif %}" href="/ledger?status=open"><b>{{ metrics.urgent|length }}</b><span>due / overdue</span></a>
+  <a class="metric{% if metrics.waiting_on_me %} is-warn{% endif %}" href="/ledger?status=open&amp;type=waiting-on-me"><b>{{ metrics.waiting_on_me|length }}</b><span>waiting on me</span></a>
+  <a class="metric{% if metrics.slipping %} is-warn{% endif %}" href="/ledger?status=open&amp;type=slipping"><b>{{ metrics.slipping|length }}</b><span>slipping</span></a>
+  <a class="metric" href="/ledger?status=open"><b>{{ metrics.open_count }}</b><span>open items</span></a>
+  <a class="metric" href="/ledger?status=resolved"><b>{{ metrics.delivery_score }}</b><span>delivered ({{ cfg.sweep.commitment_lookback_days }}d)</span></a>
+  <a class="metric" href="/ledger?status=watch"><b>{{ metrics.watch|length }}</b><span>watch list</span></a>
+</section>
+{% endif %}
+
+<section id="run" class="card" {% if not run_status.running and not run_status.last_result %}hidden{% endif %}>
+  <div class="card-head">
+    <h2>Sweep <span class="pill muted-pill" id="run-state">{% if run_status.running %}running{% else %}finished{% endif %}</span></h2>
+    <span id="run-result" class="small muted">
+    {% if run_status.last_result %}{% set r = run_status.last_result %}
+      {{ r.kind }} · {% if r.ok %}ok{% else %}<span class="danger-text">failed: {{ r.error }}</span>{% endif %}
+      {% if r.created is defined %} · {{ r.created }} created, {{ r.updated }} updated{% endif %} · {{ r.duration_seconds }}s
+    {% endif %}
+    </span>
+  </div>
+  <pre id="run-log" class="log">{{ run_status.log_tail|join('\n') }}</pre>
+</section>
+
+<section class="cols-2">
+  <div class="card brief">
+    <div class="card-head">
+      <h2>Latest brief</h2>
+      {% if latest_date %}<a class="small" href="/briefs/{{ latest_date }}">{{ latest_date }} →</a>{% endif %}
+    </div>
+    {% if brief_html %}<div class="doc">{{ brief_html|safe }}</div>
+    {% else %}
+    <div class="empty">
+      <svg class="ico"><use href="#i-briefs"></use></svg>
+      <b>No brief yet</b>
+      <p>Run a sweep and nbrain will read your sources, verify what is still open, and write today's brief here.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="stack">
+    <div class="card">
+      <h2>Last sweep</h2>
+      {% if last_sweep %}
+      <p class="small">
+        <b>{{ last_sweep.kind }}</b> · {{ last_sweep.run_at }} · {{ last_sweep.duration_seconds }}s
+        {% if last_sweep.dry_run %}<span class="pill warn">dry run</span>{% endif %}
+      </p>
+      <p class="small muted">{{ last_sweep.items_new }} new · {{ last_sweep.items_resolved }} resolved · {{ last_sweep.items_open }} open</p>
+      <p class="small">
+        {% for s in last_sweep.sources_ok %}<span class="pill ok"><span class="dot"></span>{{ s }}</span> {% endfor %}
+        {% for s in last_sweep.sources_failed %}<span class="pill danger"><span class="dot"></span>{{ s }}</span> {% endfor %}
+      </p>
+      <p class="small muted">{{ last_sweep.model or 'no model' }} · {{ last_sweep.llm_calls }} calls · {{ last_sweep.llm_input_tokens }}/{{ last_sweep.llm_output_tokens }} tokens</p>
+      <details><summary>Run notes</summary><div class="doc small">{{ last_sweep.body|md|safe }}</div></details>
+      {% else %}
+      <div class="empty"><b>No sweep has run yet</b><p>Use “Run sweep” above to do the first one.</p></div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Warnings</h2>
+      {% if warnings %}
+      <ul class="warnings small">{% for w in warnings %}<li class="warn">{{ w }}</li>{% endfor %}</ul>
+      {% else %}<p class="small muted">Nothing to flag.</p>{% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var running = {{ 'true' if run_status.running else 'false' }};
+  if (!running) return;
+  var box = document.getElementById('run'), state = document.getElementById('run-state'),
+      logEl = document.getElementById('run-log'), res = document.getElementById('run-result');
+  box.hidden = false;
+  state.className = 'pill accent';
+  function tick() {
+    fetch('/run/status', {headers: {Accept: 'application/json'}}).then(function (r) { return r.json(); }).then(function (s) {
+      logEl.textContent = (s.log_tail || []).join('\n');
+      logEl.scrollTop = logEl.scrollHeight;
+      if (s.running) { state.textContent = 'running'; setTimeout(tick, 2000); return; }
+      state.textContent = 'finished';
+      state.className = 'pill muted-pill';
+      var r = s.last_result || {};
+      res.textContent = (r.kind || '') + ' · ' + (r.ok ? 'ok' : 'failed: ' + (r.error || '')) + ' · ' + (r.duration_seconds || 0) + 's — reload to see the new brief';
+    }).catch(function () { setTimeout(tick, 4000); });
+  }
+  tick();
+})();
+</script>
+{% endblock %}

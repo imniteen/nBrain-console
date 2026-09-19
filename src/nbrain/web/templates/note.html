@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block subtitle %}<span class="sub">{{ folder }}/{{ note_id }}.md</span>{% endblock %}
+{% block actions %}
+{% if is_item %}<a class="small" href="/ledger?status=all&amp;focus={{ note_id|urlencode }}">In ledger</a>{% endif %}
+<a class="small" href="/graph?focus={{ note_id|urlencode }}">In graph →</a>
+{% endblock %}
+{% block content %}
+<section class="cols-2">
+  <article class="card doc">{{ body_html|safe or '<div class="empty"><b>No body</b><p>This note has properties only.</p></div>' }}</article>
+  <div class="card">
+    <h2>Properties</h2>
+    <dl class="props">
+    {% for k, v in meta.items() %}
+      <dt>{{ k }}</dt><dd>{{ v|fmval|safe }}</dd>
+    {% endfor %}
+    </dl>
+  </div>
+</section>
+{% endblock %}
