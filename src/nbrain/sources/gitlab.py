@@ -19,6 +19,7 @@ from nbrain.sources.base import (
     BaseSource,
     CollectResult,
     ContextMessage,
+    Interaction,
     ItemContext,
     Signal,
     SourceStatus,
@@ -162,12 +163,14 @@ class GitLabSource(BaseSource):
             get_all=False,
         )
         for mr in list(review)[:PAGE]:
+            a = _attrs(mr)
             try:
-                sig = self._review_signal(_attrs(mr), window)
+                sig = self._review_signal(a, window)
                 if sig:
                     result.signals.append(sig)
             except Exception as e:  # noqa: BLE001 - per-item errors must not abort the sweep
                 log.warning("gitlab: skipping review MR: %s", e)
+            self._add_interactions(result, a, me, kind="mr")
 
         mine = await asyncio.to_thread(
             gl.mergerequests.list,
@@ -178,12 +181,14 @@ class GitLabSource(BaseSource):
             get_all=False,
         )
         for mr in list(mine)[:PAGE]:
+            a = _attrs(mr)
             try:
-                sig = await self._slipping_mr_signal(_attrs(mr), window)
+                sig = await self._slipping_mr_signal(a, window)
                 if sig:
                     result.signals.append(sig)
             except Exception as e:  # noqa: BLE001
                 log.warning("gitlab: skipping own MR: %s", e)
+            self._add_interactions(result, a, me, kind="mr")
 
         issues = await asyncio.to_thread(
             gl.issues.list,
@@ -194,18 +199,61 @@ class GitLabSource(BaseSource):
             get_all=False,
         )
         for issue in list(issues)[:PAGE]:
+            a = _attrs(issue)
             try:
-                sig = self._issue_signal(_attrs(issue), window)
+                sig = self._issue_signal(a, window)
                 if sig:
                     result.signals.append(sig)
             except Exception as e:  # noqa: BLE001
                 log.warning("gitlab: skipping issue: %s", e)
+            self._add_interactions(result, a, me, kind="issue")
 
         if self._projects_filter():
             result.notes.append(
                 f"gitlab: limited to {len(self._projects_filter())} configured project(s)"
             )
         return result
+
+    # ---------- interactions ----------
+
+    def _add_interactions(
+        self, result: CollectResult, a: dict[str, Any], me: str, *, kind: str
+    ) -> None:
+        try:
+            result.interactions += self._interactions(a, me, kind=kind)
+        except Exception as e:  # noqa: BLE001 - relationship data never blocks collection
+            log.warning("gitlab: no interactions for %s !%s: %s", kind, a.get("iid"), e)
+
+    def _interactions(self, a: dict[str, Any], me: str, *, kind: str) -> list[Interaction]:
+        """One per human on an MR or issue other than me, from the listing already fetched.
+
+        GitLab's list payloads carry usernames and display names but never emails, so
+        `person_email` stays None rather than being guessed from the handle."""
+        if not self._in_scope(a):
+            return []
+        users: list[Any] = [a.get("author"), a.get("assignee"), *(a.get("assignees") or [])]
+        if kind == "mr":
+            users += list(a.get("reviewers") or [])
+        people: dict[str, dict[str, Any]] = {}
+        for u in users:
+            if isinstance(u, dict) and u.get("username"):
+                people.setdefault(str(u["username"]), u)
+        iid = a.get("iid")
+        at = _dt(a.get("updated_at")) or _dt(a.get("created_at"))
+        ref = f"{kind}:{a['project_id']}:{iid}"
+        return [
+            Interaction(
+                person_name=str(u.get("name") or username),
+                channel="review",
+                at=at,
+                ref=ref,
+                group=len({*people, me}) > 2,
+                with_me=True,  # every list here is scoped to me as author, reviewer or assignee
+                subject=f"!{iid}" if kind == "mr" else f"#{iid}",
+            )
+            for username, u in people.items()
+            if username != me
+        ]
 
     async def verify(self, item: Item) -> VerifyResult:
         try:

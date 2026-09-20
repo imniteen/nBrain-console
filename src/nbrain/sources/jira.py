@@ -19,6 +19,7 @@ from nbrain.sources.base import (
     BaseSource,
     CollectResult,
     ContextMessage,
+    Interaction,
     ItemContext,
     Signal,
     SourceStatus,
@@ -189,7 +190,50 @@ class JiraSource(BaseSource):
                 continue
             if sig:
                 result.signals.append(sig)
+
+        issues: dict[str, dict[str, Any]] = {}
+        for issue in [*assigned, *reported]:
+            issues.setdefault(str(issue.get("key") or ""), issue)
+        issues.pop("", None)
+        for key, issue in issues.items():
+            try:
+                result.interactions += self._interactions(key, issue)
+            except Exception as e:  # noqa: BLE001 - relationship data never blocks collection
+                log.warning("jira: no interactions for %s: %s", key, e)
         return result
+
+    # ---------- interactions ----------
+
+    def _interactions(self, key: str, issue: dict[str, Any]) -> list[Interaction]:
+        """The assignee and the reporter of an issue I am already on - one record each."""
+        f = issue.get("fields") or {}
+        assignee, reporter = f.get("assignee"), f.get("reporter")
+        at = _parse_dt(f.get("updated"))
+        with_me = self._is_me(assignee) or self._is_me(reporter)
+        out: list[Interaction] = []
+        seen: set[str] = set()
+        for user in (assignee, reporter):
+            if not user or self._is_me(user):
+                continue
+            ident = str(_user_key(user) or "")
+            name = str(user.get("displayName") or user.get("name") or "").strip()
+            email = str(user.get("emailAddress") or "").strip().lower()
+            if (ident and ident in seen) or not (name or email):
+                continue
+            seen.add(ident)
+            out.append(
+                Interaction(
+                    person_email=email or None,
+                    person_name=name or None,
+                    channel="ticket",
+                    at=at,
+                    ref=key,
+                    group=False,
+                    with_me=with_me,
+                    subject=key,
+                )
+            )
+        return out
 
     async def verify(self, item: Item) -> VerifyResult:
         key = item.source_id

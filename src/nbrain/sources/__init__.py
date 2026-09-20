@@ -1,5 +1,6 @@
 from nbrain.sources.base import (
     ContextMessage,
+    Interaction,
     ItemContext,
     Signal,
     Source,
@@ -11,6 +12,7 @@ from nbrain.sources.base import (
 
 __all__ = [
     "ContextMessage",
+    "Interaction",
     "ItemContext",
     "Signal",
     "Source",

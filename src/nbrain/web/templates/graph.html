@@ -4,6 +4,10 @@
 {% block subtitle %}<span class="sub" id="status">Loading…</span>{% endblock %}
 
 {% block actions %}
+<nav class="subnav modeswitch" aria-label="Graph mode">
+  <a href="/graph?mode=people" {% if (mode | default("people")) == "people" %}class="active" aria-current="page"{% endif %}>People</a>
+  <a href="/graph?mode=vault" {% if (mode | default("people")) != "people" %}class="active" aria-current="page"{% endif %}>Vault</a>
+</nav>
 <input id="search" type="search" placeholder="Search nodes…" autocomplete="off" aria-label="Search nodes">
 <span class="row" id="focusRow" style="display:none">
   <span class="small muted">Local graph of <b id="focusName"></b> · depth <b id="depthLabel">1</b></span>
@@ -13,6 +17,12 @@
 
 {% block content %}
 <style>
+  .people-only { display: none; }
+  .people-mode .vault-only { display: none; }
+  .people-mode .people-only { display: flex; }
+  .people-mode .range.vault-only, .people-mode .dates.vault-only { display: none; }
+  .people-mode h2.people-only { display: block; }
+
   /* ---------- page shell: fill the main column, no page scroll ---------- */
   .graphpage {
     display: grid;
@@ -237,28 +247,35 @@
     <h2>Selected</h2>
     <div id="selected"><span class="empty">Click a node.</span></div>
 
-    <h2>Types</h2>
-    <div id="typeFilters" class="row"></div>
+    <h2 class="vault-only">Types</h2>
+    <div id="typeFilters" class="row vault-only"></div>
 
-    <h2>Item status</h2>
-    <div id="statusFilters" class="row"></div>
+    <h2 class="vault-only">Item status</h2>
+    <div id="statusFilters" class="row vault-only"></div>
 
-    <h2>Date range <span class="hint">(first seen … resolved)</span></h2>
-    <div class="range">
+    <h2 class="vault-only">Date range <span class="hint">(first seen … resolved)</span></h2>
+    <div class="range vault-only">
       <div class="track"></div><div class="fill" id="rangeFill"></div>
       <input type="range" id="dateFrom" min="0" max="0" value="0" step="1" aria-label="Date from">
       <input type="range" id="dateTo" min="0" max="0" value="0" step="1" aria-label="Date to">
     </div>
-    <div class="dates"><span id="dateFromLabel">–</span><span id="dateToLabel">–</span></div>
-    <div class="row" style="margin-top:8px">
+    <div class="dates vault-only"><span id="dateFromLabel">–</span><span id="dateToLabel">–</span></div>
+    <div class="row vault-only" style="margin-top:8px">
       <button id="clearDates" class="secondary small">Clear dates</button>
     </div>
 
-    <h2>Scope</h2>
-    <div class="row" style="gap:10px">
+    <h2 class="vault-only">Scope</h2>
+    <div class="row vault-only" style="gap:10px">
       <label class="check"><input type="checkbox" id="includeBriefs"> include briefs / reviews / sweeps</label>
       <label class="check"><input type="checkbox" id="includeOrphans" checked> include unlinked nodes</label>
     </div>
+
+    <h2 class="people-only">Who to show</h2>
+    <div class="row people-only" id="peopleControls">
+      <label class="chk"><input type="checkbox" id="pIncludeUnknown" checked> include people seen only once</label>
+      <label class="chk"><input type="checkbox" id="pIncludeAutomation"> include systems and bots</label>
+    </div>
+    <div class="row people-only"><span class="muted small" id="peopleSummary"></span></div>
 
     <h2>Patterns</h2>
     <ul id="patterns"><li class="empty">Loading…</li></ul>
@@ -271,8 +288,14 @@
 <script>
 (function () {
   'use strict';
-  const GRAPH_URL = {{ graph_json_url | default("/api/graph.json") | tojson }};
-  const PATTERNS_URL = {{ patterns_url | default("/api/graph/patterns") | tojson }};
+  const PEOPLE_MODE = {{ ((mode | default("people")) == "people") | tojson }};
+  const GRAPH_URL = PEOPLE_MODE
+    ? {{ people_json_url | default("/api/graph/people.json") | tojson }}
+    : {{ graph_json_url | default("/api/graph.json") | tojson }};
+  const PATTERNS_URL = PEOPLE_MODE
+    ? {{ people_patterns_url | default("/api/graph/people/patterns") | tojson }}
+    : {{ patterns_url | default("/api/graph/patterns") | tojson }};
+  if (PEOPLE_MODE) document.querySelector('.graphpage').classList.add('people-mode');
 
   // ----- theme -----
   // graph data colours live on .graphpage, everything else inherits from :root
@@ -288,7 +311,16 @@
     open: cv('--c-open'), resolved: cv('--c-resolved'), watch: cv('--c-watch'), dismissed: cv('--c-dismissed'),
   });
   let typeColors = TYPE_COLORS(), statusColors = STATUS_COLORS();
-  const nodeColor = (n) => n.type === 'item' ? (statusColors[n.status] || statusColors.watch) : (typeColors[n.type] || cv('--text-3'));
+  const KIND_COLORS = () => ({
+    colleague: cv('--c-person'), external: cv('--c-meeting'),
+    unknown: cv('--c-phantom'), automation: cv('--c-note'), suspicious: cv('--c-open'),
+  });
+  let kindColors = KIND_COLORS();
+  const nodeColor = (n) => {
+    if (n.type === 'me') return cv('--accent');
+    if (n.type === 'person') return kindColors[n.kind] || typeColors.person;
+    return n.type === 'item' ? (statusColors[n.status] || statusColors.watch) : (typeColors[n.type] || cv('--text-3'));
+  };
   const withAlpha = (hex, a) => {
     if (!hex) return `rgba(128,128,128,${a})`;
     if (hex.startsWith('rgb')) return hex.replace(/rgba?\(([^)]+)\)/, (m, inner) => `rgba(${inner.split(',').slice(0,3).join(',')},${a})`);
@@ -326,7 +358,7 @@
     .backgroundColor(cv('--bg'))
     .nodeId('id')
     .nodeLabel(() => '')
-    .nodeVal((n) => 1 + Math.sqrt(n.degree || 0))
+    .nodeVal((n) => Math.pow(radius(n) / 3, 2))
     .linkColor((l) => isDimmed(l.source) || isDimmed(l.target) ? withAlpha(cv('--link'), cv('--dim')) : cv('--link'))
     .linkWidth((l) => (l.kind === 'mention' || l.kind === 'source') ? 0.6 : 1.2)
     .linkLineDash((l) => l.kind === 'source' ? [2, 3] : null)
@@ -340,14 +372,30 @@
     .d3AlphaDecay(0.03)
     .d3VelocityDecay(0.3);
   // isolated nodes would otherwise be flung to the edge and ruin the fit
-  fg.d3Force('charge').strength((n) => (n.degree || 0) > 0 ? -60 : -8);
+  if (PEOPLE_MODE) {
+    // Every person hangs off a single hub, so the default settings pile them on top of one
+    // another. Push hard, and give the spokes room proportional to nothing in particular —
+    // a fixed ring reads better than one where volume also controls distance.
+    fg.d3Force('charge').strength((n) => n.type === 'me' ? -900 : -320);
+    fg.d3Force('link').distance((l) => (l.kind === 'works_with' ? 150 : 70)).strength(0.55);
+    fg.d3Force('center').strength(0.05);
+  } else {
+    fg.d3Force('charge').strength((n) => (n.degree || 0) > 0 ? -60 : -8);
+  }
   let fitPending = false;
   function fitView() {
     const anyLinked = fg.graphData().nodes.some((n) => (n.degree || 0) > 0);
     fg.zoomToFit(400, 40, (n) => !anyLinked || (n.degree || 0) > 0);
   }
 
-  function radius(n) { return 3 + Math.sqrt(n.degree || 0) * 1.6; }
+  // drives both the drawing and the click target, so it must reflect what the mode is about:
+  // link count in the vault, how much you work with someone in people mode
+  function radius(n) {
+    if (!PEOPLE_MODE) return 3 + Math.sqrt(n.degree || 0) * 1.6;
+    if (n.type === 'me') return 12;
+    if (n.type === 'person') return 6 + Math.sqrt(n.weight || 1) * 2.4;
+    return 5;
+  }
   function isDimmed(n) {
     if (!n || typeof n !== 'object') return false;
     if (state.search && !state.highlight.has(n.id)) return true;
@@ -383,10 +431,23 @@
   function onHover(n) {
     el.graph.style.cursor = n ? 'pointer' : '';
     if (!n) { el.hover.style.display = 'none'; return; }
-    const meta = [n.type, n.status, n.item_type, n.date ? 'since ' + n.date : null, n.resolved ? 'until ' + n.resolved : null,
+    // `let`, not `const`: the person branch below rewrites it. As a const this threw on every
+    // hover, and a throw inside force-graph's pointer handler stops clicks registering at all.
+    let meta = [n.type, n.status, n.item_type, n.date ? 'since ' + n.date : null, n.resolved ? 'until ' + n.resolved : null,
       n.tier ? 'tier ' + n.tier : null, n.weight != null ? 'weight ' + n.weight : null, (n.degree || 0) + ' links']
       .filter(Boolean).join(' · ');
-    el.hover.innerHTML = `<div class="name">${esc(n.label)}</div><div class="meta">${esc(meta)}</div>${n.preview ? `<div>${esc(n.preview)}</div>` : ''}`;
+    let extra = '';
+    if (n.type === 'person') {
+      const mix = Object.entries(n.mix || {}).map(([k, v]) => `${v} ${k}`).join(' · ');
+      const bits = [];
+      if (mix) bits.push(mix);
+      if (n.open_items) bits.push(`${n.open_items} open with you`);
+      if (n.one_to_one) bits.push('standing 1:1');
+      if (n.quiet_days != null && n.quiet_days > 13) bits.push(`quiet ${n.quiet_days}d`);
+      extra = bits.length ? `<div>${esc(bits.join(' · '))}</div>` : '';
+      meta = `${n.kind}${n.tier ? ' · tier ' + n.tier : ''}`;
+    }
+    el.hover.innerHTML = `<div class="name">${esc(n.label)}</div><div class="meta">${esc(meta)}</div>${extra || (n.preview ? `<div>${esc(n.preview)}</div>` : '')}`;
     el.hover.style.display = 'block';
   }
   el.graph.addEventListener('mousemove', (e) => {
@@ -397,6 +458,7 @@
   });
 
   function nodeHref(n) {
+    if (n.type === 'me') return null;
     if (n.type === 'item') return '/ledger?focus=' + encodeURIComponent(n.id);
     if (n.type === 'source' || n.type === 'phantom') return null;
     return '/note/' + encodeURIComponent(n.id);
@@ -422,18 +484,41 @@
     const n = state.selected ? byId.get(state.selected) : null;
     if (!n) { el.selected.innerHTML = '<span class="empty">Click a node.</span>'; return; }
     const href = nodeHref(n);
-    const meta = [n.type, n.status, n.item_type, n.date ? 'since ' + n.date : null, (n.degree || 0) + ' links'].filter(Boolean).join(' · ');
+    // Focus and depth are vault-graph ideas: the people view is already one hop from you.
+    const canFocus = !PEOPLE_MODE;
+    let meta, preview = n.preview || '', actions = '';
+
+    if (n.type === 'me') {
+      meta = 'you';
+      preview = n.preview || '';
+      actions = `<a href="/ledger?status=open">Everything open →</a>`;
+    } else if (n.type === 'person') {
+      const mix = Object.entries(n.mix || {}).map(([k, v]) => `${v} ${k}`).join(' · ');
+      meta = [n.kind, n.tier ? 'tier ' + n.tier : null, n.one_to_one ? 'standing 1:1' : null,
+        n.date ? 'last contact ' + n.date : null].filter(Boolean).join(' · ');
+      preview = [mix, n.open_items ? `${n.open_items} open with you` : null,
+        (n.quiet_days != null && n.quiet_days > 13) ? `quiet for ${n.quiet_days} days` : null]
+        .filter(Boolean).join(' · ');
+      actions = `${href ? `<a href="${href}">Open note →</a>` : ''}
+        <a href="/ledger?status=all&q=${encodeURIComponent(n.label)}">Items with them →</a>`;
+    } else {
+      meta = [n.type, n.status, n.item_type, n.date ? 'since ' + n.date : null,
+        PEOPLE_MODE ? null : (n.degree || 0) + ' links'].filter(Boolean).join(' · ');
+      actions = `${href ? `<a href="${href}">Open ${n.type === 'item' ? 'in ledger' : 'note'} →</a>` : ''}
+        ${n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">Source ↗</a>` : ''}`;
+    }
+
     el.selected.innerHTML = `
       <div class="name">${esc(n.label)}</div>
       <div class="meta">${esc(meta)}</div>
-      ${n.preview ? `<div class="preview">${esc(n.preview)}</div>` : ''}
+      ${preview ? `<div class="preview">${esc(preview)}</div>` : ''}
       <div class="row">
-        <button class="primary" data-depth="1">Focus</button>
-        <select id="focusDepth" style="width:auto"><option value="1"${state.depth === 1 ? ' selected' : ''}>depth 1</option><option value="2"${state.depth === 2 ? ' selected' : ''}>depth 2</option><option value="3"${state.depth === 3 ? ' selected' : ''}>depth 3</option></select>
-        ${href ? `<a href="${href}">Open ${n.type === 'item' ? 'in ledger' : 'note'} →</a>` : ''}
-        ${n.url ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">Source ↗</a>` : ''}
+        ${canFocus ? `<button class="primary" data-depth="1">Focus</button>
+        <select id="focusDepth" style="width:auto"><option value="1"${state.depth === 1 ? ' selected' : ''}>depth 1</option><option value="2"${state.depth === 2 ? ' selected' : ''}>depth 2</option><option value="3"${state.depth === 3 ? ' selected' : ''}>depth 3</option></select>` : ''}
+        ${actions}
       </div>`;
-    el.selected.querySelector('button').addEventListener('click', () => {
+    const focusBtn = el.selected.querySelector('button');
+    if (focusBtn) focusBtn.addEventListener('click', () => {
       state.focus = n.id; state.depth = parseInt(el.selected.querySelector('#focusDepth').value, 10) || 1; reload();
     });
   }
@@ -457,10 +542,14 @@
       <span class="sw" style="background:${statusColors[s]}"></span>${s}</label>`).join('');
     el.typeFilters.querySelectorAll('input').forEach((i) => i.addEventListener('change', () => { toggle(state.hiddenTypes, i.dataset.type, !i.checked); applyClientFilters(); }));
     el.statusFilters.querySelectorAll('input').forEach((i) => i.addEventListener('change', () => { toggle(state.hiddenStatuses, i.dataset.status, !i.checked); applyClientFilters(); }));
-    el.legend.innerHTML = [['open item', statusColors.open], ['resolved', statusColors.resolved], ['watch', statusColors.watch],
-      ['person', typeColors.person], ['project', typeColors.project], ['meeting', typeColors.meeting], ['source', typeColors.source]]
+    const legendItems = PEOPLE_MODE
+      ? [['you', cv('--accent')], ['colleague', kindColors.colleague], ['external', kindColors.external],
+         ['unidentified', kindColors.unknown], ['open item', statusColors.open], ['project', typeColors.project]]
+      : [['open item', statusColors.open], ['resolved', statusColors.resolved], ['watch', statusColors.watch],
+         ['person', typeColors.person], ['project', typeColors.project], ['meeting', typeColors.meeting], ['source', typeColors.source]];
+    el.legend.innerHTML = legendItems
       .map(([k, c]) => `<span class="it"><span class="sw" style="background:${c}"></span>${k}</span>`).join('') +
-      `<span class="it"><span class="sw phantom"></span>unresolved</span>`;
+      (PEOPLE_MODE ? '' : `<span class="it"><span class="sw phantom"></span>unresolved</span>`);
   }
   function toggle(set, v, on) { if (on) set.add(v); else set.delete(v); }
   function visible(n) {
@@ -532,6 +621,11 @@
     el.status.textContent = 'Loading…';
     history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p : ''));
     try {
+      if (PEOPLE_MODE) {
+        const iu = document.getElementById('pIncludeUnknown'), ia = document.getElementById('pIncludeAutomation');
+        p.set('include_unknown', iu && iu.checked ? '1' : '0');
+        p.set('include_automation', ia && ia.checked ? '1' : '0');
+      }
       const res = await fetch(GRAPH_URL + (GRAPH_URL.includes('?') ? '&' : '?') + p.toString(), { headers: { Accept: 'application/json' } });
       if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
       data = await res.json();
@@ -540,6 +634,7 @@
     }
     byId = new Map(data.nodes.map((n) => [n.id, n]));
     renderFilterBoxes();
+    peopleSummary();
     setupRange();
     el.focusRow.style.display = state.focus ? '' : 'none';
     if (state.focus) { el.focusName.textContent = (byId.get(state.focus) || { label: state.focus }).label; el.depthLabel.textContent = state.depth; }
@@ -549,6 +644,22 @@
     fitPending = true;
     setTimeout(fitView, 700);
   }
+
+  function peopleSummary() {
+    if (!PEOPLE_MODE) return;
+    const box = document.getElementById('peopleSummary'); if (!box) return;
+    const m = data.meta || {}, by = m.by_kind || {};
+    const parts = [];
+    if (by.colleague) parts.push(`${by.colleague} colleagues`);
+    if (by.external) parts.push(`${by.external} external`);
+    if (by.unknown) parts.push(`${by.unknown} unidentified`);
+    const hidden = (m.hidden_automation || 0) + (m.hidden_suspicious || 0);
+    box.textContent = (parts.join(' · ') || 'nobody yet') + (hidden ? ` · ${hidden} systems hidden` : '');
+  }
+
+  PEOPLE_MODE && ['pIncludeUnknown','pIncludeAutomation'].forEach((id) => {
+    const e = document.getElementById(id); if (e) e.addEventListener('change', () => load());
+  });
 
   async function loadPatterns() {
     try {
@@ -578,7 +689,7 @@
     const n = byId.get(id);
     if (state.hiddenTypes.has(n.type) || (n.type === 'item' && state.hiddenStatuses.has(n.status))) {
       state.hiddenTypes.delete(n.type); if (n.type === 'item') state.hiddenStatuses.delete(n.status);
-      renderFilterBoxes(); applyClientFilters();
+      renderFilterBoxes(); peopleSummary(); applyClientFilters();
     }
     select(id);
     const centre = () => {
@@ -596,7 +707,7 @@
   function resize() { const r = el.graph.getBoundingClientRect(); fg.width(r.width).height(r.height); }
   window.addEventListener('resize', () => { resize(); paintRange(); });
   if (window.matchMedia) window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    typeColors = TYPE_COLORS(); statusColors = STATUS_COLORS(); fg.backgroundColor(cv('--bg')); renderFilterBoxes(); fg.nodeColor(fg.nodeColor());
+    typeColors = TYPE_COLORS(); statusColors = STATUS_COLORS(); kindColors = KIND_COLORS(); fg.backgroundColor(cv('--bg')); renderFilterBoxes(); fg.nodeColor(fg.nodeColor());
   });
   resize();
   reload();

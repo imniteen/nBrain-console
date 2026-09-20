@@ -45,6 +45,7 @@ class SweepReport:
     blind_spots: list[str] = field(default_factory=list)
     coverage_gaps: list[str] = field(default_factory=list)
     per_source: dict[str, str] = field(default_factory=dict)
+    people: Any = None  # PeopleUpdate from the relationship pass
     verify: VerifySummary | None = None
     collected: CollectResult = field(default_factory=CollectResult)
     created: int = 0
@@ -190,7 +191,8 @@ class Sweep:
                 self.report.per_source[name] = f"FAILED: {type(res).__name__}"
                 continue
             self.report.per_source[name] = (
-                f"{len(res.signals)} signals, {len(res.texts)} texts, {len(res.events)} events"
+                f"{len(res.signals)} signals, {len(res.texts)} texts, {len(res.events)} events, "
+                f"{len(res.interactions)} interactions"
                 + (" — nothing found" if not (res.signals or res.texts or res.events) else "")
             )
             merged.extend(res)
@@ -366,6 +368,15 @@ class Sweep:
         for k, v in rep.collected.findings.items():
             rep.blind_spots.append(f"{k}: {v}")
 
+        # 4b. relationships: who you actually deal with, and through which channel
+        try:
+            from nbrain.vault.people import update_people
+
+            rep.people = update_people(self.store, self.cfg, rep.collected.interactions, self.today)
+            log.info("people pass: %s", rep.people.counts())
+        except Exception as e:  # noqa: BLE001 - never let this block the brief
+            rep.warnings.append(f"people pass failed: {e}")
+
         # 5. extract with the model
         signals = list(rep.collected.signals)
         texts_by_id = {t.source_id: t for t in rep.collected.texts}
@@ -483,6 +494,8 @@ class Sweep:
         logn.id = self.today.isoformat()
         logn.priority_split = m.priority_split if m else {}
         logn.imbalance = bool(m and m.imbalance_runs > 0)
+        if rep.people is not None:
+            logn.people = rep.people.counts()
         body = ["## Collected per source"] + [f"- {k}: {v}" for k, v in sorted(rep.per_source.items())]
         body += ["", "## Not checked"] + ([f"- {n}" for n in rep.not_checked] or ["- none"])
         body += ["", "## Warnings"] + ([f"- {w}" for w in rep.warnings] or ["- none"])

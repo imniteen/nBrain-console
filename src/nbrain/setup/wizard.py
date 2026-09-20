@@ -38,7 +38,7 @@ DEFAULT_MODELS = {
     Provider.openrouter: "openai/gpt-5.6-luna",
     Provider.ollama: "qwen3:14b",
     Provider.openai_compatible: "local-model",
-    Provider.bedrock: "anthropic.claude-opus-5",
+    Provider.bedrock: "us.anthropic.claude-opus-5",
 }
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
 from typing import Any
 
@@ -19,6 +20,7 @@ from nbrain.sources.base import (
     BaseSource,
     CollectResult,
     ContextMessage,
+    Interaction,
     ItemContext,
     Signal,
     SourceStatus,
@@ -60,6 +62,27 @@ def _data(resp: Any) -> dict[str, Any]:
     return resp.data if hasattr(resp, "data") else dict(resp)
 
 
+def _is_app(m: dict[str, Any]) -> bool:
+    """Bots and apps post messages but are not people to have a relationship with."""
+    return bool(m.get("bot_id") or m.get("app_id") or m.get("subtype"))
+
+
+@dataclass
+class _Chan:
+    """What one channel contributed to this sweep: who spoke and how recently."""
+
+    name: str
+    at: float = 0.0
+    last_is_me: bool = False
+    users: set[str] = field(default_factory=set)
+
+    def saw(self, ts: float, uid: str, *, is_me: bool) -> None:
+        if ts >= self.at:
+            self.at, self.last_is_me = ts, is_me
+        if not is_me:
+            self.users.add(uid)
+
+
 class SlackSource(BaseSource):
     name = "slack"
     roles = {"chat"}
@@ -71,7 +94,9 @@ class SlackSource(BaseSource):
         self._client: WebClient | None = None
         self._me: str | None = cfg.sources.slack.user_id or None
         self._users: dict[str, str] = {}
+        self._user_emails: dict[str, str] = {}  # filled from the same users.info call as the name
         self._channels: dict[str, str] = {}
+        self._dms: set[str] = set()  # im/mpim ids seen while listing conversations
         self._permalinks: dict[str, str] = {}
 
     # ---------- client ----------
@@ -108,6 +133,9 @@ class SlackSource(BaseSource):
                 self._users[uid] = (
                     profile.get("display_name") or u.get("real_name") or u.get("name") or uid
                 )
+                email = str(profile.get("email") or "").strip().lower()
+                if email:  # only when the token may read it; never guessed from the handle
+                    self._user_emails[uid] = email
             except SlackApiError as e:
                 log.warning("slack: users.info failed for %s: %s", uid, e)
                 self._users[uid] = uid
@@ -182,6 +210,8 @@ class SlackSource(BaseSource):
                     text=m["text"],
                 )
             )
+
+        result.interactions += await self._interactions([*mine[:cap], *mentions[:MAX_MENTIONS]], me)
 
         cutoff = datetime.now(UTC).timestamp() - window.awaiting_reply_hours * 3600
         for m in mentions[:MAX_MENTIONS]:
@@ -283,6 +313,50 @@ class SlackSource(BaseSource):
             fingerprint=f"{usable[-1]['ts']}:{len(usable)}",
         )
 
+    # ---------- interactions ----------
+
+    def _is_dm(self, channel: str) -> bool:
+        return channel in self._dms or channel.startswith("D")
+
+    def _tally(self, channels: dict[str, _Chan], m: dict[str, Any], me: str) -> None:
+        uid, cid = m.get("user"), m.get("channel")
+        if not uid or not cid or _is_app(m):
+            return
+        name = str(m.get("channel_name") or self._channels.get(cid) or cid)
+        channels.setdefault(cid, _Chan(name=name)).saw(
+            float(m.get("ts") or 0), str(uid), is_me=uid == me
+        )
+
+    async def _interactions(self, messages: list[dict[str, Any]], me: str) -> list[Interaction]:
+        """One per human per channel, from the messages this sweep already read."""
+        channels: dict[str, _Chan] = {}
+        for m in messages:
+            try:
+                self._tally(channels, m, me)
+            except Exception as e:  # noqa: BLE001 - a malformed message costs only itself
+                log.warning("slack: skipping interaction for %s: %s", m.get("ts"), e)
+        out: list[Interaction] = []
+        for cid, chan in channels.items():
+            for uid in sorted(chan.users):
+                try:
+                    who = await self._user_name(uid)  # populates the email cache too, one call
+                    out.append(
+                        Interaction(
+                            person_email=self._user_emails.get(uid),
+                            person_name=who,
+                            channel="slack",
+                            at=_ts_dt(chan.at),
+                            ref=cid,
+                            group=not self._is_dm(cid),
+                            with_me=True,
+                            inbound=not chan.last_is_me,
+                            subject=chan.name,
+                        )
+                    )
+                except Exception as e:  # noqa: BLE001 - relationship data never blocks collection
+                    log.warning("slack: no interaction for %s in %s: %s", uid, cid, e)
+        return out
+
     # ---------- fetching ----------
 
     async def _search(self, query: str, cap: int) -> list[dict[str, Any]]:
@@ -315,6 +389,8 @@ class SlackSource(BaseSource):
         for ch in channels[:MAX_CHANNELS]:
             name = ch.get("name") or ch.get("id")
             self._channels[ch["id"]] = name
+            if ch.get("is_im") or ch.get("is_mpim"):
+                self._dms.add(ch["id"])
             try:
                 hist = await self._call(
                     "conversations_history", channel=ch["id"], oldest=str(min(mine_since, mention_since)), limit=200

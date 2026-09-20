@@ -782,7 +782,14 @@ def create_app(vault: Path | None = None) -> FastAPI:
         return page(
             request,
             "graph.html",
-            {"title": "Graph", "graph_json_url": "/api/graph.json", "patterns_url": "/api/graph/patterns"},
+            {
+                "title": "Graph",
+                "mode": request.query_params.get("mode", "people"),
+                "graph_json_url": "/api/graph.json",
+                "patterns_url": "/api/graph/patterns",
+                "people_json_url": "/api/graph/people.json",
+                "people_patterns_url": "/api/graph/people/patterns",
+            },
         )
 
     def vault_graph(store: VaultStore) -> Any:
@@ -928,6 +935,44 @@ def create_app(vault: Path | None = None) -> FastAPI:
             {"fingerprint": ctx.fingerprint, "generated_at": generated_at, "assist": assist.model_dump(mode="json")},
         )
         return JSONResponse(payload | {"assist": assist.model_dump(mode="json"), "cached": False, "generated_at": generated_at})
+
+    def _people_mode(request: Request) -> bool:
+        return request.query_params.get("mode", "people") == "people"
+
+    @app.get("/api/graph/people.json")
+    def api_people_graph(request: Request) -> JSONResponse:
+        cfg = current_cfg()
+        store = store_for(cfg)
+        try:
+            from nbrain.vault.people import build_people_graph
+        except ImportError:  # pragma: no cover
+            return JSONResponse({"error": "people module unavailable"}, status_code=503)
+        q = request.query_params
+        try:
+            data = build_people_graph(
+                store,
+                cfg,
+                today_for(cfg),
+                include_unknown=q.get("include_unknown", "1") != "0",
+                include_automation=q.get("include_automation") == "1",
+                min_interactions=int(q.get("min_interactions", 1)),
+            )
+            return JSONResponse(data)
+        except Exception as e:  # noqa: BLE001
+            log.exception("people graph failed")
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/graph/people/patterns")
+    def api_people_patterns(request: Request) -> JSONResponse:
+        cfg = current_cfg()
+        store = store_for(cfg)
+        try:
+            from nbrain.vault.people import people_patterns
+
+            return JSONResponse({"patterns": people_patterns(store, cfg, today_for(cfg))})
+        except Exception as e:  # noqa: BLE001
+            log.exception("people patterns failed")
+            return JSONResponse({"error": str(e)}, status_code=500)
 
     @app.get("/api/graph/patterns")
     def api_patterns() -> JSONResponse:

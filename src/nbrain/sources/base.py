@@ -148,6 +148,30 @@ class ContextMessage(BaseModel):
         return _GAPS.sub("\n\n", text).strip()
 
 
+Channel = Literal["email", "chat", "slack", "meeting", "ticket", "review"]
+
+
+class Interaction(BaseModel):
+    """One piece of evidence that the user and another human dealt with each other.
+
+    The sweep only ever kept things that needed action, so there was no way to answer "how much
+    do I actually work with this person". Sources emit these for everything they see, action or
+    not, and the people pass aggregates them per person and channel."""
+
+    person_email: str | None = None
+    person_name: str | None = None
+    channel: Channel
+    at: datetime | None = None
+    ref: str = ""  # stable id of the thread/event/issue, so re-reads do not double count
+    group: bool = False  # a channel or meeting with many people, not a one-to-one
+    with_me: bool = True  # False for a mention of someone in content I merely read
+    inbound: bool | None = None  # they wrote to me / I wrote to them; None when not applicable
+    subject: str = ""  # thread subject, meeting title, issue key — evidence, not content
+
+    def key(self) -> str:
+        return f"{self.channel}:{self.ref}:{(self.person_email or self.person_name or '').lower()}"
+
+
 class ItemContext(BaseModel):
     """Live state pulled from the source at the moment the user asks for help with an item.
 
@@ -192,6 +216,7 @@ class CollectResult:
     signals: list[Signal] = field(default_factory=list)
     texts: list[SourceText] = field(default_factory=list)
     events: list[CalendarEvent] = field(default_factory=list)
+    interactions: list[Interaction] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)  # coverage caveats for "Not checked"
     findings: dict[str, str] = field(default_factory=dict)  # e.g. jira: "no due dates exist"
 
@@ -199,6 +224,7 @@ class CollectResult:
         self.signals += other.signals
         self.texts += other.texts
         self.events += other.events
+        self.interactions += other.interactions
         self.notes += other.notes
         self.findings.update(other.findings)
 

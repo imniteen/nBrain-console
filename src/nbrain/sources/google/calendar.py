@@ -16,6 +16,7 @@ from nbrain.sources.base import (
     CalendarEvent,
     CollectResult,
     ContextMessage,
+    Interaction,
     ItemContext,
     Signal,
     SourceStatus,
@@ -152,6 +153,10 @@ class CalendarSource(BaseSource):
             if ev is None:
                 continue
             result.events.append(ev)
+            try:
+                result.interactions += self._event_interactions(raw, ev)
+            except Exception as e:  # noqa: BLE001 - relationship data never blocks collection
+                log.warning("google-calendar: no interactions for %s: %s", raw.get("id"), e)
             if (
                 ev.start.date() == window.today
                 and ev.organiser_is_me
@@ -173,6 +178,34 @@ class CalendarSource(BaseSource):
                     )
                 )
         return result
+
+    # ---------- interactions ----------
+
+    def _event_interactions(self, raw: dict[str, Any], ev: CalendarEvent) -> list[Interaction]:
+        """One per attendee other than me. Rooms and people who declined are not company."""
+        attendees = [a for a in raw.get("attendees") or [] if not a.get("resource")]
+        group = len(attendees) > 2  # counted with me, as the contract asks
+        out: list[Interaction] = []
+        for a in attendees:
+            email = str(a.get("email") or "").strip().lower()
+            name = str(a.get("displayName") or "").strip()
+            if a.get("self") or (email and email == self._me):
+                continue
+            if a.get("responseStatus") == "declined" or not (email or name):
+                continue
+            out.append(
+                Interaction(
+                    person_email=email or None,
+                    person_name=name or None,
+                    channel="meeting",
+                    at=ev.start,
+                    ref=ev.source_id,
+                    group=group,
+                    with_me=True,
+                    subject=ev.title,
+                )
+            )
+        return out
 
     # ---------- verify ----------
 

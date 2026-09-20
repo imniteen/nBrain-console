@@ -22,6 +22,7 @@ from nbrain.sources.base import (
     BaseSource,
     CollectResult,
     ContextMessage,
+    Interaction,
     ItemContext,
     Signal,
     SourceStatus,
@@ -203,6 +204,7 @@ class ChatSource(BaseSource):
             result.notes.append(f"google-chat: {failures} space(s) could not be read")
 
         self._resolve_me(msgs)
+        result.interactions += self._interactions(msgs)
         for m in msgs:
             if self._is_me(m):
                 if m.text:
@@ -220,6 +222,46 @@ class ChatSource(BaseSource):
             if old and (self._mentions_me(m) or (direct and "?" in m.text)):
                 result.signals.append(self._waiting_signal(m))
         return result
+
+    # ---------- interactions ----------
+
+    def _interactions(self, msgs: list[_Msg]) -> list[Interaction]:
+        """One per human per space, from the messages this sweep already read."""
+        by_space: dict[str, list[_Msg]] = {}
+        for m in msgs:
+            if m.space:
+                by_space.setdefault(m.space, []).append(m)
+        out: list[Interaction] = []
+        for space, in_space in by_space.items():
+            try:
+                out += self._space_interactions(space, in_space)
+            except Exception as e:  # noqa: BLE001 - relationship data never blocks collection
+                log.warning("google-chat: no interactions for %s: %s", space, e)
+        return out
+
+    def _space_interactions(self, space: str, msgs: list[_Msg]) -> list[Interaction]:
+        latest = max(msgs, key=lambda m: m.created)
+        speakers: dict[str, _Msg] = {}
+        for m in msgs:
+            if not m.sender_human or self._is_me(m):
+                continue
+            who = m.sender_email or m.sender_id or m.sender_name
+            if who:
+                speakers.setdefault(who, m)
+        return [
+            Interaction(
+                person_email=m.sender_email or None,
+                person_name=m.sender_name or None,
+                channel="chat",
+                at=latest.created,
+                ref=space,
+                group=latest.space_type != "DIRECT_MESSAGE",
+                with_me=True,
+                inbound=not self._is_me(latest),
+                subject=latest.space_title or space,
+            )
+            for m in speakers.values()
+        ]
 
     def _replied_after(self, m: _Msg, msgs: list[_Msg]) -> bool:
         for other in msgs:

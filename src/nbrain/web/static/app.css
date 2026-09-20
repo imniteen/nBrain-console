@@ -782,3 +782,7 @@ details.adv > summary::before { content: "▸"; font-size: 10px; transition: tra
 details.adv[open] > summary::before { transform: rotate(90deg); }
 details.adv > summary:hover { color: var(--text); }
 details.adv[open] > summary { margin-bottom: 12px; }
+
+/* graph mode switch sits in the topbar, so it must not inherit the settings sub-nav spacing */
+.subnav.modeswitch { margin: 0; padding: 3px; }
+.subnav.modeswitch a { padding: 4px 11px; font-size: 12.5px; }

@@ -24,6 +24,7 @@ from nbrain.sources.base import (
     BaseSource,
     CollectResult,
     ContextMessage,
+    Interaction,
     ItemContext,
     Signal,
     SourceStatus,
@@ -49,6 +50,25 @@ _SCRIPTY = re.compile(r"(?is)<(script|style)\b.*?</\1>")
 _QUOTE_HEADER = re.compile(r"^\s*(On .{5,120}\bwrote:|-{2,}\s*Original Message|_{5,})", re.IGNORECASE)
 _BLANK_RUN = re.compile(r"\n{3,}")
 
+# Local parts that mean "a machine sent this": recording them as relationships would put
+# no-reply@ at the top of "who I work with most".
+_AUTOMATED_LOCAL = (
+    "no-reply",
+    "noreply",
+    "no_reply",
+    "donotreply",
+    "do-not-reply",
+    "do_not_reply",
+    "mailer-daemon",
+    "mailerdaemon",
+    "postmaster",
+    "bounce",
+    "notification",
+    "auto-reply",
+    "autoreply",
+    "automated",
+)
+
 
 @dataclass
 class _Thread:
@@ -61,6 +81,7 @@ class _Thread:
     inbound: bool
     participants: list[str] = field(default_factory=list)
     recipient_emails: list[str] = field(default_factory=list)
+    people: dict[str, str] = field(default_factory=dict)  # every From/To/Cc address -> display name
 
     @property
     def url(self) -> str:
@@ -109,6 +130,14 @@ def _message_time(msg: dict[str, Any], headers: dict[str, str], tz: ZoneInfo) ->
 def _matches(email: str, patterns: list[str]) -> bool:
     e = email.lower()
     return any(p and p.lower() in e for p in patterns)
+
+
+def _automated(email: str) -> bool:
+    """True for addresses no human reads: no-reply@, notifications@, bounces, mailer-daemon."""
+    local, _, domain = email.lower().partition("@")
+    if any(word in local for word in _AUTOMATED_LOCAL):
+        return True
+    return domain.startswith(("noreply.", "no-reply.", "bounce.", "bounces."))
 
 
 def _age_words(seconds: float) -> str:
@@ -206,6 +235,7 @@ def summarise_thread(thread: dict[str, Any], me: str, tz: ZoneInfo) -> _Thread |
         inbound=from_email != me,
         participants=[f"{n} <{e}>" if n != e.split("@")[0] else e for e, n in seen.items()],
         recipient_emails=[e for _, e in _addresses(lh.get("to", "")) if e != me],
+        people=dict(seen),
     )
 
 
@@ -274,6 +304,10 @@ class GmailSource(BaseSource):
             th = summarise_thread(raw, self._me, tz)
             if th is None:
                 continue
+            try:
+                result.interactions += self._thread_interactions(th)
+            except Exception as e:  # noqa: BLE001 - relationship data never blocks collection
+                log.warning("gmail: no interactions for thread %s: %s", tid, e)
             if _matches(th.last_from_email, self.cfg.noise.suppress):
                 continue
             if _matches(th.last_from_email, self.cfg.noise.phishing):
@@ -291,6 +325,33 @@ class GmailSource(BaseSource):
         if failures:
             result.notes.append(f"gmail: {failures} thread(s) could not be fetched")
         return result
+
+    # ---------- interactions ----------
+
+    def _noisy(self, email: str) -> bool:
+        """A sender that is a system, a list or a trap - never a working relationship."""
+        n = self.cfg.noise
+        return _automated(email) or _matches(email, [*n.suppress, *n.mine, *n.phishing])
+
+    def _thread_interactions(self, th: _Thread) -> list[Interaction]:
+        """One per human on the thread other than me - per thread, not per message."""
+        humans = {e: n for e, n in th.people.items() if not self._noisy(e)}
+        group = len(humans) > 2
+        return [
+            Interaction(
+                person_email=email,
+                person_name=name or None,
+                channel="email",
+                at=th.last_at,
+                ref=th.id,
+                group=group,
+                with_me=True,
+                inbound=th.inbound,
+                subject=th.subject,
+            )
+            for email, name in humans.items()
+            if email != self._me
+        ]
 
     def _phishing_signal(self, th: _Thread) -> Signal:
         return Signal(

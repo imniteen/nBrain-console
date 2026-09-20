@@ -165,17 +165,66 @@ class Item(Note):
         return "⚠️ unconfirmed"
 
 
+class PersonKind(StrEnum):
+    """What this address actually is. Guessed from behaviour, correctable by hand."""
+
+    colleague = "colleague"  # a human on your own domain you exchange messages with
+    external = "external"  # a human elsewhere: client, vendor, candidate
+    automation = "automation"  # no-reply, build bots, ticket notifications
+    suspicious = "suspicious"  # phishing-shaped; never treated as a contact
+    unknown = "unknown"  # seen once, not enough to say
+
+
 class Person(Note):
     FOLDER: ClassVar[str] = "People"
 
     email: str | None = None
     tier: int = 2  # 1 = never wait, 2 = team, 3 = occasional
     external: bool = False
+    kind: PersonKind = PersonKind.unknown
+    kind_evidence: str | None = None  # why, in one line, so a wrong guess is visible
     sla_hours: int | None = None
     relationship: str | None = None  # manager, report, peer, client...
     role: str | None = None
     out_of_office_until: date | None = None
+
+    # How you actually work together. Counted from interactions, never from the model.
+    emails: int = 0
+    chats: int = 0
+    group_chats: int = 0
+    meetings: int = 0
+    tickets: int = 0
+    reviews: int = 0
+    one_to_one: bool = False  # a recurring meeting with just the two of you
+    first_interaction: date | None = None
+    last_interaction: date | None = None
+    interaction_refs: list[str] = Field(default_factory=list)  # dedupe keys already counted
+
     tags: list[str] = Field(default_factory=lambda: ["nbrain/person"])
+
+    @field_validator("first_interaction", "last_interaction", mode="before")
+    @classmethod
+    def _idates(cls, v: Any) -> date | None:
+        return _fm_date(v)
+
+    @property
+    def total_interactions(self) -> int:
+        return self.emails + self.chats + self.group_chats + self.meetings + self.tickets + self.reviews
+
+    def channel_mix(self) -> dict[str, int]:
+        """Only the channels with something in them, strongest first."""
+        raw = {
+            "email": self.emails,
+            "chat": self.chats,
+            "group chat": self.group_chats,
+            "meetings": self.meetings,
+            "tickets": self.tickets,
+            "reviews": self.reviews,
+        }
+        return {k: v for k, v in sorted(raw.items(), key=lambda kv: -kv[1]) if v}
+
+    def is_real_person(self) -> bool:
+        return self.kind in (PersonKind.colleague, PersonKind.external)
 
     @field_validator("out_of_office_until", mode="before")
     @classmethod
