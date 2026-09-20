@@ -79,3 +79,14 @@ def test_glean_read_tools_pass_the_gate_but_writes_do_not():
     opened = ToolGate(_server(tool_allow=["^run_agent_profiler$"], allow_write=True), [])
     assert opened.allows("run_agent_profiler") is True
     assert opened.allows("run_agent_other") is False, "allow-list still narrows it"
+
+
+def test_a_vault_makes_the_oauth_token_outlive_the_process(tmp_path):
+    """Without persistent storage every sweep would reopen a browser, so the daemon could never run."""
+    from nbrain.mcp.registry import build_oauth
+    from nbrain.mcp.tokens import FileTokenStore, token_file
+
+    oauth = build_oauth(_server(auth="oauth"), tmp_path)
+    store = oauth.context.storage._key_value_store
+    assert isinstance(store, FileTokenStore)
+    assert store.path == token_file(tmp_path)

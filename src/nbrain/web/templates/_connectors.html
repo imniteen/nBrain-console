@@ -1,0 +1,252 @@
+{# A connector reads like an integration panel: who it is, whether it works, and exactly which
+   of its tools nbrain may call. Groups collapse, and a group can be set in one go. #}
+<section class="card flush" id="connectors">
+  <div class="card-head">
+    <h2>Connectors</h2>
+    <span class="small muted">{{ connectors|selectattr('status.usable')|list|length }} of {{ connectors|length }} connected</span>
+  </div>
+
+  {% for row in connectors %}
+  {% set c = row.conn %}{% set st = row.status %}
+  {% set reads = st.tools|rejectattr('write')|list %}
+  {% set writes = st.tools|selectattr('write')|list %}
+  <article class="connector" id="c-{{ c.key }}" data-key="{{ c.key }}"{% if st.needs_check %} data-check="1"{% endif %}>
+    <header class="connector-head">
+      <span class="connector-icon" style="--brand: {{ c.brand }}">{{ c.label[0] }}</span>
+      <div class="connector-title">
+        <h3>{{ c.label }}
+          <span class="tag">{{ 'Writes allowed' if row.server and row.server.allow_write else 'Read-only' }}</span>
+          {% if st.usable %}<span class="pill ok"><span class="dot"></span>connected</span>
+          {% elif st.connected %}<span class="pill warn"><span class="dot"></span>needs attention</span>
+          {% elif row.configured %}<span class="pill muted-pill"><span class="dot"></span>not connected</span>
+          {% else %}<span class="pill muted-pill"><span class="dot"></span>not set up</span>{% endif %}
+          {% if row.configured and not row.enabled %}<span class="pill warn">off</span>{% endif %}
+        </h3>
+        <p class="small muted">{{ c.blurb }}.</p>
+      </div>
+      <div class="connector-actions">
+        {% if row.configured and not st.blocker %}
+        <form method="post" action="/connectors/{{ c.key }}/connect" class="inline">
+          <button type="submit" class="{{ '' if st.connected else 'primary' }} js-connect">{{ 'Reconnect' if st.connected else 'Connect' }}</button>
+        </form>
+        {% endif %}
+        {% if st.connected %}
+        <form method="post" action="/connectors/{{ c.key }}/disconnect" class="inline">
+          <button type="submit" class="js-connect">Disconnect</button>
+        </form>
+        {% endif %}
+        <details class="menu">
+          <summary aria-label="More">⋮</summary>
+          <div class="menu-body">
+            {% if st.connected %}<button type="button" class="js-recheck" data-key="{{ c.key }}">Check now</button>{% endif %}
+            <button type="button" class="js-settings" data-key="{{ c.key }}">Settings</button>
+            {% if c.docs_url %}<a href="{{ c.docs_url }}" target="_blank" rel="noopener">Provider docs ↗</a>{% endif %}
+          </div>
+        </details>
+      </div>
+    </header>
+
+    <p class="connector-note small" data-role="note">
+      {% if st.blocker %}<span class="pill warn">{{ st.blocker }}</span>
+      {% elif st.connected and st.checked and not st.usable %}<span class="pill danger">{{ st.error }}</span>
+      {% elif st.needs_check %}<span class="muted">Authorised. Checking whether the server accepts it…</span>
+      {% elif st.usable and st.expires_at %}<span class="muted">Reused on every sweep; this grant expires {{ st.expires_at|ts }}.</span>
+      {% elif st.usable %}<span class="muted">Reused on every sweep — no browser needed again.</span>
+      {% elif c.auth == 'dcr' %}<span class="muted">No token to create: {{ c.label }} registers nbrain during the first connect.</span>
+      {% elif c.auth == 'confidential' %}<span class="muted">Register <code>{{ redirect_uri }}</code> as a redirect URL in your {{ c.label }} app first, or it will refuse the request.</span>
+      {% endif %}
+    </p>
+
+    {% if st.tools %}
+    <section class="tool-perms">
+      <h4>Tool permissions</h4>
+      <p class="small muted">Choose which tools nbrain may call. A sweep runs unattended, so there is nobody to approve a call while it happens — each tool is either allowed or blocked.</p>
+
+      {% for group, tools, blurb in [('Read-only tools', reads, 'Cannot change anything in ' ~ c.label), ('Write tools', writes, 'Blocked by default, whatever the server offers')] %}
+      {% if tools %}
+      {% set on = tools|selectattr('allowed')|list|length %}
+      <details class="tool-group"{% if group.startswith('Write') or tools|length <= 8 %} open{% endif %}>
+        <summary>
+          <span class="group-name">{{ group }} <span class="pill muted-pill">{{ tools|length }}</span></span>
+          <span class="group-state">
+            <span class="small muted">{{ on }} of {{ tools|length }} allowed</span>
+            <button type="button" class="js-group" data-key="{{ c.key }}" data-write="{{ 1 if group.startswith('Write') else 0 }}" data-allow="{{ 0 if on else 1 }}">{{ 'Block all' if on else 'Allow all' }}</button>
+          </span>
+        </summary>
+        <p class="group-blurb small muted">{{ blurb }}.</p>
+        {% for t in tools %}
+        <div class="tool">
+          <div class="tool-id">
+            <b>{{ t.label }}</b>
+            <p><code>{{ t.name }}</code>{% if t.description %} · {{ t.description }}{% endif %}</p>
+          </div>
+          <div class="seg" role="group" aria-label="Permission for {{ t.name }}">
+            <button type="button" class="js-tool{{ ' on' if t.allowed }}" data-key="{{ c.key }}" data-tool="{{ t.name }}" data-allow="1" title="Allow">✓</button>
+            <button type="button" class="js-tool{{ ' off' if not t.allowed }}" data-key="{{ c.key }}" data-tool="{{ t.name }}" data-allow="0" title="Block">✕</button>
+          </div>
+        </div>
+        {% endfor %}
+      </details>
+      {% endif %}
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <details class="connector-setup" id="s-{{ c.key }}"{% if not row.configured or st.blocker %} open{% endif %}>
+      <summary>{{ 'Settings' if row.configured else 'Set up ' ~ c.label }}</summary>
+      <form method="post" action="/connectors/{{ c.key }}/setup" class="form grid">
+        {% if c.needs_domain %}
+        <label class="field">
+          <span>Backend domain</span>
+          <input name="domain" value="{{ row.domain }}" placeholder="acme-be.glean.com" autocomplete="off">
+          <small class="hint">{{ c.domain_hint }}</small>
+        </label>
+        {% endif %}
+        {% if c.auth == 'confidential' %}
+        <label class="field">
+          <span>Client ID</span>
+          <input name="client_id" value="{{ row.server.oauth_client_id or '' if row.server else '' }}" placeholder="1601185624273.8899143856786" autocomplete="off">
+          <small class="hint">{{ c.client_id_hint }}</small>
+        </label>
+        <label class="field">
+          <span>Client secret</span>
+          <input name="client_secret" type="password" placeholder="{{ 'stored — leave blank to keep' if not st.blocker else 'paste once, stored outside config.yaml' }}" autocomplete="off">
+          <small class="hint">Kept in <code>{{ c.client_secret_env }}</code>, never in config.yaml.</small>
+        </label>
+        <label class="field wide">
+          <span>Redirect URL to register</span>
+          <input value="{{ redirect_uri }}" readonly onclick="this.select()">
+          <small class="hint">Paste this into your provider app exactly. {{ cert_advice }}</small>
+        </label>
+        {% endif %}
+        <div class="field wide actions-row">
+          <button type="submit" class="primary">Save</button>
+        </div>
+      </form>
+      {% if c.setup_steps %}
+      <ol class="small muted steps">{% for step in c.setup_steps %}<li>{{ step }}</li>{% endfor %}</ol>
+      {% endif %}
+    </details>
+  </article>
+  {% endfor %}
+</section>
+
+<script>
+(function () {
+  const PENDING = {{ (pending or '')|tojson }};
+  const cards = {};
+  document.querySelectorAll('.connector').forEach(function (el) { cards[el.dataset.key] = el; });
+
+  function note(key, html) {
+    const el = cards[key] && cards[key].querySelector('[data-role="note"]');
+    if (el) el.innerHTML = html;
+  }
+  function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+  function poll(key) {
+    fetch('/api/connectors/status').then(function (r) { return r.json(); }).then(function (s) {
+      if (s.running) {
+        // A browser launch can quietly fail, so always offer the link rather than leaving the
+        // user watching a message with nothing to click.
+        const link = s.auth_url
+          ? ' <a href="' + esc(s.auth_url) + '" target="_blank" rel="noopener">Open the approval page</a>'
+          : '';
+        const stop = ' <a href="#" class="js-cancel" data-key="' + esc(key) + '">Stop waiting</a>';
+        note(key, '<span class="muted">Waiting for you to approve it in the browser…</span>' + link + stop);
+        return setTimeout(function () { poll(key); }, 1200);
+      }
+      const res = s.result;
+      if (!res || res.key !== key) return;
+      if (!res.ok) { note(key, '<span class="pill danger">' + esc(res.error) + '</span>'); return; }
+      // The server now holds the tool list, so a reload renders it in one consistent place.
+      location.href = '/sources#c-' + encodeURIComponent(key);
+    }).catch(function () { note(key, '<span class="pill danger">lost contact with nbrain</span>'); });
+  }
+
+  function check(key, loud) {
+    if (loud) note(key, '<span class="muted">Checking…</span>');
+    fetch('/connectors/' + encodeURIComponent(key) + '/check', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (r.usable) { location.href = '/sources#c-' + encodeURIComponent(key); return; }
+        note(key, '<span class="pill danger">' + esc(r.error || 'the server refused the stored grant') + '</span>');
+        const pill = cards[key].querySelector('.pill');
+        if (pill) { pill.className = 'pill warn'; pill.innerHTML = '<span class="dot"></span>needs attention'; }
+      })
+      .catch(function () { note(key, '<span class="pill danger">could not reach the server to check</span>'); });
+  }
+
+  function post(url, then) {
+    fetch(url, { method: 'POST' }).then(function (r) { return r.json(); }).then(then);
+  }
+
+  document.querySelectorAll('.js-connect').forEach(function (b) {
+    const form = b.closest('form');
+    if (!form) return;
+    form.addEventListener('submit', function () {
+      note(b.closest('.connector').dataset.key, '<span class="muted">Opening your browser…</span>');
+      // Disable only after the submit has been dispatched: disabling a submit button inside its
+      // own click handler cancels the submission outright in Chrome and Safari.
+      setTimeout(function () { b.disabled = true; }, 0);
+    });
+  });
+
+  document.addEventListener('click', function (ev) {
+    const stop = ev.target.closest('.js-cancel');
+    if (stop) {
+      ev.preventDefault();
+      const f = document.createElement('form');
+      f.method = 'post';
+      f.action = '/connectors/' + encodeURIComponent(stop.dataset.key) + '/cancel';
+      document.body.appendChild(f);
+      f.submit();
+      return;
+    }
+
+    const recheck = ev.target.closest('.js-recheck');
+    if (recheck) { check(recheck.dataset.key, true); return; }
+
+    const settings = ev.target.closest('.js-settings');
+    if (settings) {
+      const panel = document.getElementById('s-' + settings.dataset.key);
+      if (panel) { panel.open = true; panel.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+      return;
+    }
+
+    const group = ev.target.closest('.js-group');
+    if (group) {
+      ev.preventDefault();  // the button lives inside a <summary>
+      group.disabled = true;
+      post('/connectors/' + encodeURIComponent(group.dataset.key) + '/tools?group=' +
+           (group.dataset.write === '1' ? 'write' : 'read') + '&allow=' + group.dataset.allow,
+           function () { location.href = '/sources#c-' + encodeURIComponent(group.dataset.key); });
+      return;
+    }
+
+    const tool = ev.target.closest('.js-tool');
+    if (tool) {
+      const row = tool.closest('.seg');
+      row.querySelectorAll('.js-tool').forEach(function (b) { b.disabled = true; });
+      post('/connectors/' + encodeURIComponent(tool.dataset.key) + '/tools/' +
+           encodeURIComponent(tool.dataset.tool) + '?allow=' + tool.dataset.allow,
+        function (r) {
+          row.querySelectorAll('.js-tool').forEach(function (b) {
+            b.disabled = false;
+            const wants = b.dataset.allow === '1';
+            b.className = 'js-tool' + (wants === r.allowed ? (wants ? ' on' : ' off') : '');
+          });
+          const box = tool.closest('details');
+          const count = box.querySelectorAll('.js-tool.on').length;
+          const label = box.querySelector('.group-state .muted');
+          if (label) label.textContent = count + ' of ' + box.querySelectorAll('.tool').length + ' allowed';
+        });
+    }
+  });
+
+  // "Authorised but never checked" is a question, not a verdict — answer it rather than making
+  // the user guess that Reconnect is the button that would have told them.
+  document.querySelectorAll('.connector[data-check="1"]').forEach(function (el) { check(el.dataset.key, false); });
+
+  if (PENDING) poll(PENDING);
+})();
+</script>

@@ -10,6 +10,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -68,7 +69,41 @@ def _expand(value: str) -> str:
     return os.path.expandvars(os.path.expanduser(value))
 
 
-def build_transport(server: MCPServerConfig) -> Any:
+class OAuthError(RuntimeError):
+    """Raised when an OAuth connector is configured in a way that cannot work."""
+
+
+def build_oauth(server: MCPServerConfig, vault: Path) -> Any:
+    """The OAuth handler for one server, keeping its token in the vault rather than in memory.
+
+    Servers that support dynamic client registration need nothing configured; servers that
+    insist on a client an admin created beforehand read it from `oauth_client_id` and the
+    secret named by `oauth_client_secret_env`."""
+    from fastmcp.client.auth.oauth import OAuth
+
+    from nbrain.mcp.tokens import FileTokenStore, token_file
+
+    if not server.url:
+        raise OAuthError(f"{server.name}: an OAuth connection needs a url")
+    secret = get_secret(server.oauth_client_secret_env)
+    if server.oauth_client_secret_env and not secret:
+        raise OAuthError(
+            f"{server.name}: {server.oauth_client_secret_env} is not set, so the client secret "
+            "this server requires is missing"
+        )
+    return OAuth(
+        mcp_url=server.url,
+        scopes=server.oauth_scopes or None,
+        client_name="nbrain",
+        token_storage=FileTokenStore(token_file(vault)),
+        # The consent screen is a human at a browser: allow for a slow login, but do not hang for ever.
+        callback_timeout=300.0,
+        client_id=server.oauth_client_id,
+        client_secret=secret,
+    )
+
+
+def build_transport(server: MCPServerConfig, *, vault: Path | None = None) -> Any:
     if server.auth == "oauth" and server.transport == "stdio":
         raise ValueError(f"MCP server {server.name}: oauth needs an http or sse transport, not stdio")
     if server.transport == "stdio":
@@ -85,10 +120,12 @@ def build_transport(server: MCPServerConfig) -> Any:
             headers[header] = val if header.lower() != "authorization" or val.lower().startswith(("bearer ", "basic ")) else f"Bearer {val}"
         else:
             log.warning("MCP server %s: header %s references unset env %s", server.name, header, env_name)
-    # oauth runs the server's OAuth 2.1 flow (dynamic client registration) in a browser.
-    # The token is held in memory only, so every process start re-authenticates: fine when you
-    # run a command yourself, useless for the scheduled daemon. Prefer a token in headers_env there.
-    auth = "oauth" if server.auth == "oauth" else None
+    # oauth runs the server's OAuth 2.1 flow in a browser the first time. Given a vault we hand
+    # fastmcp a token store that outlives the process, so the daemon never needs a browser; without
+    # one (a bare transport check) fall back to its in-memory default.
+    auth: Any = "oauth" if server.auth == "oauth" and vault is None else None
+    if server.auth == "oauth" and vault is not None:
+        auth = build_oauth(server, vault)
     if server.transport == "sse":
         return SSETransport(server.url, headers=headers or None, auth=auth)
     return StreamableHttpTransport(server.url, headers=headers or None, auth=auth)

@@ -5,6 +5,9 @@
 {% endblock %}
 
 {% block content %}
+{% if error %}<div class="alert danger"><b>Not saved.</b> {{ error }}</div>{% endif %}
+{% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
+{% include "_connectors.html" %}
 {% if results is not none %}
 <section class="card flush">
   <div class="card-head"><h2>Check results</h2><span class="small muted">{{ results|selectattr('ok')|list|length }} of {{ results|length }} healthy</span></div>

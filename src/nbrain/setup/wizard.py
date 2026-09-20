@@ -14,6 +14,7 @@ import questionary
 from rich.console import Console
 from rich.table import Table
 
+from nbrain.auth.loopback import cert_advice, redirect_uri
 from nbrain.config.loader import get_secret, load_config, save_config, set_secret, write_pointer
 from nbrain.config.schema import (
     Config,
@@ -23,6 +24,10 @@ from nbrain.config.schema import (
     Provider,
     RoleTrack,
 )
+from nbrain.mcp import catalog
+from nbrain.mcp.catalog import CONNECTORS
+from nbrain.mcp.connect import connect as connector_connect
+from nbrain.mcp.connect import status as connector_status
 from nbrain.util import safe_filename
 from nbrain.vault.render import render_memory
 from nbrain.vault.schema import Meeting, Person, Project
@@ -131,18 +136,11 @@ def _test_llm(cfg: Config, task: str) -> bool:
 
 # MCP servers worth offering by name in setup, so a user does not have to hand-write JSON for
 # the ones nearly everybody wants. Everything else still goes in via the MCP servers step.
-KNOWN_MCP: dict[str, dict[str, Any]] = {
-    "glean": {
-        "label": "Glean",
-        "blurb": "Company knowledge: search, chat, documents, code, people",
-        "token_env": "GLEAN_TOKEN",
-        "path": "/mcp/default",
-        "roles": ["knowledge"],
-        "domain_hint": "your Glean backend domain, shown at app.glean.com/admin/about-glean",
-        "instructions": "Prefer search over chat, and name the document each answer came from.",
-        "token_prompt": "Glean user-scoped API token (blank to add later with `nbrain secret GLEAN_TOKEN`)",
-    },
-}
+# Connectors come from one catalogue shared with the web UI, so the two can never disagree
+# about what Glean or Slack needs. Keys are prefixed in the checkbox because a catalogue
+# connector and a native source can share a name (Slack is both).
+KNOWN_MCP = CONNECTORS
+MCP_PREFIX = "mcp:"
 
 
 def _find_mcp(cfg: Config, name: str) -> MCPServerConfig | None:
@@ -150,47 +148,64 @@ def _find_mcp(cfg: Config, name: str) -> MCPServerConfig | None:
 
 
 def _known_mcp_step(cfg: Config, vault: Path, key: str, enable: bool) -> None:
-    """Add, update or switch off one of the well-known MCP servers."""
-    spec = KNOWN_MCP[key]
+    """Set up one catalogue connector and offer to connect it there and then.
+
+    The whole point is that nothing here asks for a token: the user answers at most a domain
+    or a client id, and the grant itself happens in their browser."""
+    conn = KNOWN_MCP[key]
     existing = _find_mcp(cfg, key)
     if not enable:
         if existing:
             existing.enabled = False
-            console.print(f"  [yellow]{spec['label']} switched off.[/yellow] Its settings stay in config.yaml.")
+            console.print(f"  [yellow]{conn.label} switched off.[/yellow] Its settings stay in config.yaml.")
         return
 
-    current_domain = ""
-    if existing and existing.url:
-        current_domain = existing.url.split("://", 1)[-1].split("/")[0]
-    console.print(f"  {spec['blurb']}. Find {spec['domain_hint']}.")
-    domain = _ask(Q.text(f"{spec['label']} backend domain", default=current_domain, style=STYLE)).strip()
-    domain = domain.replace("https://", "").replace("http://", "").strip("/")
-    if not domain:
-        console.print(f"  [yellow]No domain given; {spec['label']} not configured.[/yellow]")
+    console.print(f"  {conn.blurb}.")
+    domain = ""
+    if conn.needs_domain:
+        current = existing.url.split("://", 1)[-1].split("/")[0] if existing and existing.url else ""
+        console.print(f"  Find {conn.domain_hint}.")
+        domain = _ask(Q.text(f"{conn.label} backend domain", default=current, style=STYLE)).strip()
+        if not domain:
+            console.print(f"  [yellow]No domain given; {conn.label} not configured.[/yellow]")
+            return
+
+    client_id = ""
+    if conn.auth == "confidential":
+        console.print(f"  {conn.label} needs an app someone registered, because it does not support")
+        console.print("  dynamic client registration. Register this redirect URL with it:")
+        console.print(f"    [bold]{redirect_uri(cfg.web.oauth_port)}[/bold]")
+        console.print(f"  {cert_advice()}")
+        current_id = existing.oauth_client_id if existing else ""
+        client_id = _ask(Q.text("Client ID", default=current_id or "", style=STYLE)).strip()
+        if not client_id:
+            console.print(f"  [yellow]No client id; {conn.label} not configured.[/yellow]")
+            return
+
+    server = catalog.apply(cfg, conn, domain=domain, client_id=client_id)
+    console.print(f"  {conn.label} set to [bold]{server.url}[/bold], role {', '.join(server.roles)}.")
+
+    if conn.auth == "confidential" and conn.client_secret_env and not get_secret(conn.client_secret_env):
+        _secret_step(conn.client_secret_env, vault, prompt=f"{conn.label} client secret")
+
+    st = connector_status(cfg, server)
+    if st.blocker:
+        console.print(f"  [yellow]Not ready yet:[/yellow] {st.blocker}. Run `nbrain connect {key}` once it is.")
         return
-    url = f"https://{domain}{spec['path']}"
-
-    server = existing or MCPServerConfig(name=key)
-    server.enabled = True
-    server.transport = "http"
-    server.url = url
-    server.headers_env = {"Authorization": spec["token_env"]}
-    server.roles = list(spec["roles"])
-    if not server.instructions:
-        server.instructions = spec["instructions"]
-    if existing is None:
-        cfg.mcp_servers.append(server)
-    console.print(f"  {spec['label']} set to [bold]{url}[/bold], role {', '.join(server.roles)}.")
-
-    if get_secret(spec["token_env"]):
-        console.print(f"  {spec['token_env']} is already set.")
-    else:
-        _secret_step(spec["token_env"], vault, prompt=spec["token_prompt"])
-        if not get_secret(spec["token_env"]):
-            console.print(
-                f"  [yellow]No token yet.[/yellow] {spec['label']} stays configured but will be "
-                f"reported as unreachable until you run `nbrain secret {spec['token_env']}`."
-            )
+    if st.connected:
+        console.print(f"  [green]{conn.label} is already connected.[/green]")
+        return
+    if not _ask(Q.confirm(f"Open the browser and connect {conn.label} now?", default=True, style=STYLE)):
+        console.print(f"  Connect it later with `nbrain connect {key}`.")
+        return
+    try:
+        st = asyncio.run(connector_connect(cfg, server))
+    except Exception as e:  # noqa: BLE001 - the wizard reports and carries on
+        console.print(f"  [yellow]{conn.label} did not connect:[/yellow] {e}")
+        console.print(f"  Everything is saved; retry with `nbrain connect {key}`.")
+        return
+    allowed = sum(1 for t in st.tools if t.allowed)
+    console.print(f"  [green]{conn.label} connected.[/green] {allowed} of {len(st.tools)} tools allowed (writes stay blocked).")
 
 
 def _source_status(cfg: Config, vault: Path) -> dict[str, str]:
@@ -213,9 +228,11 @@ def _source_status(cfg: Config, vault: Path) -> dict[str, str]:
         "slack": tok(cfg.sources.slack.token_env),
         "jira": tok(cfg.sources.jira.token_env) + (f" · {cfg.sources.jira.url}" if cfg.sources.jira.url else ""),
     }
-    for key, spec in KNOWN_MCP.items():
+    for key in KNOWN_MCP:
         srv = _find_mcp(cfg, key)
-        out[key] = tok(spec["token_env"]) + (f" · {srv.url}" if srv and srv.url else " · no URL yet")
+        st = connector_status(cfg, srv) if srv else None
+        where = f" · {srv.url}" if srv and srv.url else ""
+        out[MCP_PREFIX + key] = ("connected" if st and st.connected else "not connected") + where
     return out
 
 
@@ -223,16 +240,16 @@ def _sources_step(cfg: Config, vault: Path) -> None:
     labels = {
         "google": "Google Workspace (Gmail, Calendar, Chat, Drive meeting notes)",
         "gitlab": "GitLab",
-        "slack": "Slack",
+        "slack": "Slack (API token — the connector below is the newer route)",
         "jira": "Jira",
-        **{k: f"{v['label']} ({v['blurb'].lower()})" for k, v in KNOWN_MCP.items()},
+        **{MCP_PREFIX + k: f"{v.label} — {v.blurb.lower()}" for k, v in KNOWN_MCP.items()},
     }
     enabled = {
         "google": cfg.sources.google.enabled,
         "gitlab": cfg.sources.gitlab.enabled,
         "slack": cfg.sources.slack.enabled,
         "jira": cfg.sources.jira.enabled,
-        **{k: bool((_find_mcp(cfg, k) or MCPServerConfig(name=k, enabled=False)).enabled and _find_mcp(cfg, k)) for k in KNOWN_MCP},
+        **{MCP_PREFIX + k: bool(_find_mcp(cfg, k) and _find_mcp(cfg, k).enabled) for k in KNOWN_MCP},
     }
     status = _source_status(cfg, vault)
     console.print("  Ticked means enabled. Unticking turns a source off; its settings are kept.")
@@ -241,7 +258,7 @@ def _sources_step(cfg: Config, vault: Path) -> None:
             "Sources to connect",
             choices=[
                 Q.Choice(f"{labels[k]}  ({status[k]})", k, checked=enabled[k])
-                for k in ("google", "gitlab", "slack", "jira", *KNOWN_MCP)
+                for k in ("google", "gitlab", "slack", "jira", *(MCP_PREFIX + k for k in KNOWN_MCP))
             ],
             style=STYLE,
         )
@@ -312,7 +329,7 @@ def _sources_step(cfg: Config, vault: Path) -> None:
         _secret_step(j.token_env, vault, prompt="Jira API token")
 
     for key in KNOWN_MCP:
-        _known_mcp_step(cfg, vault, key, key in picked)
+        _known_mcp_step(cfg, vault, key, MCP_PREFIX + key in picked)
 
 
 def _mcp_step(cfg: Config) -> None:

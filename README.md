@@ -107,6 +107,60 @@ Local models without tool calling: set `output_mode: prompted` (the wizard does 
 Anthropic Opus 5 / Fable 5.1 requests include server-side refusal fallbacks by default; set
 `anthropic_fallbacks: false` to turn that off.
 
+## Connectors: connect without a token
+
+Some providers can be connected the way a chat app connects an integration — click **Connect**,
+approve in the browser, done. nbrain keeps the resulting grant in the vault, so every later sweep
+and the scheduled daemon reuse it without opening a browser again.
+
+Open **Sources** in the web UI, or:
+
+```bash
+nbrain connect glean
+nbrain connections
+nbrain disconnect glean
+```
+
+| connector | what you do once | why |
+|---|---|---|
+| **Glean** | enter your backend domain, click Connect | Glean's MCP server supports OAuth 2.1 with **dynamic client registration**, so nbrain registers itself during the first connect. Nothing to create, nothing to paste. |
+| **Slack** | register a Slack app, paste its Client ID and secret, click Connect | Slack's MCP server states plainly that it does not support dynamic client registration, so it needs a client someone registered beforehand. |
+
+What each style means in practice:
+
+- **Dynamic client registration.** No app, no token, no admin. If your Glean admin has not enabled
+  Glean's OAuth authorisation server, connecting fails with a clear message and you can fall back
+  to a Client API token (below).
+- **Confidential client.** Slack additionally refuses any redirect URL that is not HTTPS, so nbrain
+  serves its OAuth callback over TLS on loopback using a self-signed certificate it generates into
+  the vault. **Your browser warns once**, you accept, and it remembers. `mkcert -install` removes
+  the warning entirely if you would rather not see it.
+
+The redirect URL to register with the provider is shown on the Sources page and defaults to:
+
+```
+https://localhost:8766/oauth/callback
+```
+
+**Register it before you click Connect.** In Slack that is **OAuth & Permissions → Redirect URLs →
+Add New Redirect URL → Save URLs**. Slack's rule is that `redirect_uri` "must match or be a
+subdirectory of a Redirect URL configured under App Management", so `https://localhost:8766` also
+covers it. Miss this step and Slack answers *"redirect_uri did not match any configured URIs"* on
+its own page and never sends you back — nbrain would sit waiting, so the panel offers **Stop
+waiting** to end the attempt and try again.
+
+Change the port with `web.oauth_port` — but the provider matches the URL exactly, so re-register it
+anywhere you have already used it.
+
+**Where the credentials live.** The access token goes into `nbrain/.env` (mode 600), the refresh
+token and expiry into `nbrain/oauth.json` (mode 600), and the OAuth client secret into `.env` under
+the name shown on the page. None of them ever enter `config.yaml`. `nbrain disconnect <name>`
+removes all of it; revoking the grant itself is done at the provider.
+
+**Tool permissions.** After connecting, the Sources page lists every tool the server exposes, split
+into read-only and write tools. Write-shaped tools stay blocked unless you allow them one by one —
+the same gate that guards every MCP server, described under [Any MCP server](#any-mcp-server).
+
 ## Sources
 
 | source | needs | read scopes / token |
@@ -200,6 +254,14 @@ delete `nbrain/google-token.json` and run `nbrain auth google` again.
 
 ### Slack, click by click
 
+> **Two routes to Slack.** This section covers the original one: a user token that nbrain's own
+> collector reads. The newer route is Slack's hosted MCP server at `https://mcp.slack.com/mcp`,
+> connected with a browser click and no token — see
+> [Connectors](#connectors-connect-without-a-token). It needs a Slack app all the same, because
+> Slack only lets directory-published or internal apps use MCP, but you paste a Client ID rather
+> than hunting for a token, and Slack maintains the tools.
+
+
 nbrain reads Slack as **you**, not as a bot, because the commitments worth tracking are in your own
 messages and your own unanswered mentions. That needs a user token.
 
@@ -289,10 +351,17 @@ Find your server URL by opening [app.glean.com/admin/about-glean](https://app.gl
 taking the backend domain and appending `/mcp/default`. Transport is streamable HTTP; SSE is
 deprecated.
 
-**Use a token, not OAuth.** Glean recommends OAuth for interactive hosts like Cursor, and nbrain
-supports it with `auth: oauth`, but the token is held in memory only: every process re-runs the
-browser flow, which the scheduled daemon cannot do. A user-scoped Client API token works
-unattended.
+**Connect, rather than find a token.** Glean supports OAuth 2.1 with dynamic client registration,
+so the setup wizard and the Sources page offer a Connect button: nbrain registers itself, you sign
+in with your usual SSO, and the grant is stored for later sweeps. See
+[Connectors](#connectors-connect-without-a-token).
+
+```bash
+nbrain connect glean
+```
+
+**If your admin has not enabled Glean's OAuth server**, fall back to a user-scoped Client API token
+with the `MCP` and `SEARCH` scopes:
 
 ```bash
 nbrain secret GLEAN_TOKEN

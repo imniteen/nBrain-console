@@ -171,10 +171,15 @@ class MCPServerConfig(BaseModel):
     url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
     headers_env: dict[str, str] = Field(default_factory=dict)  # header name -> env var holding value
-    # "oauth" runs the server's OAuth 2.1 flow in a browser. The token is NOT persisted, so each
-    # process re-authenticates — usable interactively, not from the daemon. For unattended runs use
-    # a token via headers_env instead. "none" = no auth, or authenticated by the headers above.
+    # "oauth" runs the server's OAuth 2.1 flow in a browser once; the token is then kept in the
+    # vault's oauth.json so later sweeps and the daemon reuse it without prompting. "none" = no
+    # auth, or authenticated by the headers above.
     auth: Literal["none", "oauth"] = "none"
+    # Servers that support dynamic client registration need neither of these (Glean). Servers that
+    # insist on a client an admin created beforehand need both (Slack).
+    oauth_client_id: str | None = None
+    oauth_client_secret_env: str | None = None
+    oauth_scopes: list[str] = Field(default_factory=list)
     roles: list[Role] = Field(default_factory=lambda: ["other"])
     tool_allow: list[str] = Field(default_factory=list)  # regexes; empty = all
     tool_deny: list[str] = Field(default_factory=list)  # regexes, in addition to the write denylist
@@ -254,6 +259,9 @@ class WebConfig(BaseModel):
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 8765
+    # Where the OAuth redirect lands during a Connect. Providers match the redirect URL exactly,
+    # so changing this means re-registering it with every connector that was set up before.
+    oauth_port: int = 8766
 
 
 class Config(BaseModel):

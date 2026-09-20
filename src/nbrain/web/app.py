@@ -9,13 +9,15 @@ import json
 import logging
 import re
 import threading
+from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import frontmatter
 import uvicorn
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -40,11 +42,16 @@ from nbrain.config.schema import (
     RoleTrack,
 )
 from nbrain.llm.tasks import LLMTasks
+from nbrain.mcp import catalog
+from nbrain.mcp.catalog import CONNECTORS
+from nbrain.mcp.registry import is_write_tool
 from nbrain.sources.base import ItemContext
 from nbrain.sweep.metrics import compute_metrics
 from nbrain.util import humanize_age, today_in, unlink
 from nbrain.vault.schema import Item, ItemStatus, ItemType, Meeting, Person, Project, SweepLog
 from nbrain.vault.store import VaultStore
+from nbrain.web.connectors import ConnectRunner
+from nbrain.web.connectors import rows as connector_rows
 from nbrain.web.md import render_markdown, render_value
 from nbrain.web.runner import SweepRunner
 
@@ -221,10 +228,17 @@ def create_app(vault: Path | None = None) -> FastAPI:
     app.state.cfg = cfg
     app.state.store = VaultStore(cfg.vault)
     app.state.runner = SweepRunner(cfg.vault)
+    app.state.connector = ConnectRunner()
     app.state.graph = None
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
     templates = Jinja2Templates(directory=str(TEMPLATES))
+    def _when(unix: float | None) -> str:
+        """A stored expiry, as a date the reader can act on."""
+        if not unix:
+            return ""
+        return datetime.fromtimestamp(float(unix), UTC).astimezone().strftime("%d %b %Y, %H:%M")
+
     templates.env.filters["md"] = render_markdown
     templates.env.filters["fmval"] = render_value
     templates.env.filters["age"] = humanize_age
@@ -236,6 +250,7 @@ def create_app(vault: Path | None = None) -> FastAPI:
             return ""
 
     templates.env.filters["weekday"] = _weekday
+    templates.env.filters["ts"] = _when
     templates.env.globals["item_types"] = [t.value for t in ItemType]
     templates.env.globals["item_statuses"] = [s.value for s in ItemStatus]
     templates.env.globals["providers"] = [p.value for p in Provider]
@@ -608,12 +623,136 @@ def create_app(vault: Path | None = None) -> FastAPI:
             {"task": t, "desc": describe_model(getattr(cfg.llm, t))}
             for t in LLM_TASKS if getattr(cfg.llm, t) is not None
         ]
-        return {"native": native, "mcp": cfg.mcp_servers, "llms": llms}
+        from nbrain.auth.loopback import cert_advice, redirect_uri
+
+        return {
+            "native": native,
+            "mcp": cfg.mcp_servers,
+            "llms": llms,
+            "connectors": connector_rows(cfg),
+            "redirect_uri": redirect_uri(cfg.web.oauth_port),
+            "cert_advice": cert_advice(),
+        }
+
+
+    # ----- connectors -----
+    # Connecting is a browser round-trip that can take minutes, so the POST only starts it.
+    @app.post("/connectors/{key}/setup")
+    async def connector_setup(key: str, request: Request) -> RedirectResponse:
+        cfg = current_cfg()
+        conn = CONNECTORS.get(key)
+        if conn is None:
+            raise HTTPException(404, f"unknown connector {key}")
+        form = await request.form()
+        domain = str(form.get("domain", "")).strip()
+        client_id = str(form.get("client_id", "")).strip()
+        secret = str(form.get("client_secret", "")).strip()
+        if conn.needs_domain and not domain:
+            return RedirectResponse(f"/sources?error={quote(conn.label + ' needs a backend domain')}", 303)
+        catalog.apply(cfg, conn, domain=domain, client_id=client_id)
+        if secret and conn.client_secret_env:
+            set_secret(conn.client_secret_env, secret, use_keyring=False, vault=cfg.vault_path)
+        save_config(cfg)
+        return RedirectResponse(f"/sources?message={quote(conn.label + ' saved')}#c-" + key, 303)
+
+    @app.post("/connectors/{key}/check")
+    async def connector_check(key: str) -> JSONResponse:
+        """Ask the server whether the stored grant works. Called automatically when unknown."""
+        cfg = current_cfg()
+        server = catalog.find(cfg, key)
+        if server is None:
+            raise HTTPException(404, f"unknown connector {key}")
+        from nbrain.mcp.connect import check
+
+        st = await check(cfg, server)
+        return JSONResponse(
+            {
+                "key": key, "connected": st.connected, "usable": st.usable, "error": st.error,
+                "detail": st.detail, "tools": [asdict(t) for t in st.tools],
+            }
+        )
+
+    @app.post("/connectors/{key}/cancel")
+    def connector_cancel(key: str) -> RedirectResponse:
+        app.state.connector.cancel()
+        return RedirectResponse(f"/sources#c-{key}", 303)
+
+    # Named explicitly rather than as /{action}: a catch-all here shadows every sibling route,
+    # which is what swallowed the tool-group endpoint below.
+    @app.post("/connectors/{key}/connect")
+    def connector_connect(key: str) -> RedirectResponse:
+        return _connector_action(key, "connect")
+
+    @app.post("/connectors/{key}/disconnect")
+    def connector_disconnect(key: str) -> RedirectResponse:
+        return _connector_action(key, "disconnect")
+
+    def _connector_action(key: str, action: str) -> RedirectResponse:
+        cfg = current_cfg()
+        if catalog.find(cfg, key) is None:
+            return RedirectResponse(f"/sources?error={quote('set up ' + key + ' first')}", 303)
+        if not app.state.connector.start(cfg.vault, key, action=action):
+            busy = app.state.connector.current
+            if busy == key:
+                # Clicking again while this one is still waiting means the browser never showed
+                # up. Send them back to the live approval link rather than to an error.
+                return RedirectResponse(f"/sources?pending={key}#c-{key}", 303)
+            return RedirectResponse(
+                f"/sources?error={quote(f'{busy} is still connecting — finish or wait for that one first')}", 303
+            )
+        return RedirectResponse(f"/sources?pending={key}#c-{key}", 303)
+
+    @app.get("/api/connectors/status")
+    def connector_status() -> JSONResponse:
+        return JSONResponse(app.state.connector.status())
+
+    def _set_tools(key: str, names: list[str], *, allow: bool) -> None:
+        cfg = current_cfg()
+        server = catalog.find(cfg, key)
+        if server is None:
+            raise HTTPException(404, f"unknown connector {key}")
+        patterns = {f"^{re.escape(n)}$" for n in names}
+        deny = [p for p in server.tool_deny if p not in patterns]
+        if not allow:
+            deny += sorted(patterns)
+        server.tool_deny = deny
+        # A write tool stays blocked by the gate unless writes are allowed outright, so allowing
+        # one by name has to lift that too — otherwise the button would appear to do nothing.
+        if allow and any(is_write_tool(n) for n in names):
+            server.allow_write = True
+        save_config(cfg)
+
+    @app.post("/connectors/{key}/tools")
+    def connector_tool_group(key: str, group: str = "read", allow: str = "") -> JSONResponse:
+        """Allow or block a whole group at once, the way the group header offers."""
+        cfg = current_cfg()
+        server = catalog.find(cfg, key)
+        if server is None:
+            raise HTTPException(404, f"unknown connector {key}")
+        from nbrain.mcp.connect import status as connector_status
+
+        want_write = group == "write"
+        names = [t.name for t in connector_status(cfg, server).tools if t.write == want_write]
+        _set_tools(key, names, allow=allow == "1")
+        return JSONResponse({"group": group, "tools": len(names), "allowed": allow == "1"})
+
+    @app.post("/connectors/{key}/tools/{tool}")
+    def connector_tool(key: str, tool: str, allow: str = "") -> JSONResponse:
+        """Block or unblock one tool by name, which is what the permission list writes."""
+        _set_tools(key, [tool], allow=allow == "1")
+        return JSONResponse({"tool": tool, "allowed": allow == "1"})
 
     @app.get("/sources", response_class=HTMLResponse)
-    def sources(request: Request) -> HTMLResponse:
+    def sources(request: Request, error: str = "", message: str = "", pending: str = "") -> HTMLResponse:
         cfg = current_cfg()
-        return page(request, "sources.html", {"title": "Sources", "cfg": cfg, **sources_ctx(cfg), "results": None})
+        return page(
+            request,
+            "sources.html",
+            {
+                "title": "Sources", "cfg": cfg, **sources_ctx(cfg), "results": None,
+                "error": error, "message": message, "pending": pending,
+            },
+        )
 
     @app.post("/sources/check", response_class=HTMLResponse)
     async def sources_check(request: Request) -> HTMLResponse:

@@ -495,3 +495,72 @@ def graph_export(vault: VaultOpt = None, out: Path | None = typer.Option(None, "
 
 if __name__ == "__main__":
     app()
+
+
+# ----- connectors -----
+@app.command()
+def connect(
+    name: Annotated[str, typer.Argument(help="Connector name, e.g. slack or glean")],
+    vault: VaultOpt = None,
+) -> None:
+    """Connect a source in the browser. No token to find, copy or paste."""
+    from nbrain.mcp import connect as connector
+
+    cfg, _ = _load(vault)
+    try:
+        server = connector.server_for(cfg, name)
+    except connector.ConnectError as e:
+        console.print(f"[red]{e}[/red]  Set it up first: `nbrain setup`, or the Sources page.")
+        raise typer.Exit(1) from None
+
+    st = connector.status(cfg, server)
+    if st.blocker:
+        console.print(f"[yellow]{name} is not ready:[/yellow] {st.blocker}")
+        raise typer.Exit(1)
+    console.print(f"Opening your browser to approve {st.label}…")
+    try:
+        st = asyncio.run(connector.connect(cfg, server))
+    except Exception as e:  # noqa: BLE001 - every failure here is the user's to read
+        console.print(f"[red]{name} did not connect:[/red] {e}")
+        raise typer.Exit(1) from None
+
+    console.print(f"[green]{st.label} connected.[/green] Later sweeps reuse this without a browser.")
+    if st.tools:
+        t = Table("tool", "gate")
+        for tool in st.tools:
+            t.add_row(tool.name, "[green]allowed[/green]" if tool.allowed else "[red]blocked[/red]")
+        console.print(t)
+
+
+@app.command()
+def disconnect(name: str, vault: VaultOpt = None) -> None:
+    """Forget a connector's stored credentials. Revoke the grant at the provider to finish."""
+    from nbrain.mcp import connect as connector
+
+    cfg, _ = _load(vault)
+    try:
+        server = connector.server_for(cfg, name)
+    except connector.ConnectError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1) from None
+    if asyncio.run(connector.disconnect(cfg, server)):
+        console.print(f"[green]{name} disconnected.[/green] The grant itself lives on until you revoke it at the provider.")
+    else:
+        console.print(f"{name} had nothing stored.")
+
+
+@app.command()
+def connections(vault: VaultOpt = None) -> None:
+    """What is connected, and what each one still needs."""
+    from nbrain.mcp import connect as connector
+
+    cfg, _ = _load(vault)
+    rows = connector.statuses(cfg)
+    if not rows:
+        console.print("No connectors configured yet. Run `nbrain setup` or open the Sources page.")
+        return
+    t = Table("connector", "state", "auth", "note")
+    for st in rows:
+        state = "[green]connected[/green]" if st.connected else "[dim]not connected[/dim]"
+        t.add_row(st.label, state, st.style, st.blocker or "")
+    console.print(t)
